@@ -12,8 +12,10 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Documentation
 - **Industry-standard docstrings** — Added Google-style module and class docstrings to `src/bridge.py`, `src/qt_main.py`, `src/qt_qml_app.py`, `src/qt_widgets.py`, and `src/qt_dialogs.py`. The bridge now documents its full signal inventory and threading model; Qt widget classes document their normalized output ranges and signal contracts; the QML entry point lists all context properties exposed to QML. The remaining ten modules in `src/` already carried full Google/NumPy-style docstrings and were left unchanged.
+- **Cephable integration analysis** (`docs/vision/CEPHABLE_INTEGRATION.md`): Analysis of the Cephable virtual-controller sample, covering its SignalR hub protocol, OAuth and device-registration flow, event schema (`KeyPress`/`KeyRelease`/`KeyToggle`, `JoystickMove` on a -100..100 axis range, `Pause`), and a proposed path to consume Cephable commands through the existing Nimbus output layer.
 
 ### Added
+- **Cephable sample-data fixtures** (`tests/fixtures/cephable/`): Seven MIT-licensed JSON fixtures from Cephable's `src/sample-data/` (basic keys, simple and complex gamepad and keyboard-mouse macros, plus the key/button value namespace), with the upstream `README.md` kept for provenance. Replayable offline as a regression corpus for the input pipeline.
 - **User Accounts** (`src/cloud_client.py`) — Optional sign-in with Email, Google OAuth, or Facebook OAuth via Supabase. Tokens stored securely in OS credential vault (Windows Credential Manager) via `keyring`. Supports session restore, silent token refresh, and offline fallback.
 - **Cloud Profile Sync** — Nimbus+ subscribers can sync profiles across machines. Last-write-wins merge strategy per profile ID. Push on save, pull on startup.
 - **Telemetry & Crash Reporting** (`src/telemetry.py`) — Opt-in anonymous usage analytics and crash reporting. Events buffered locally and batch-flushed every 5 minutes. No PII collected — all identifiers are SHA-256 hashed. Optional Sentry SDK integration for structured crash reports.
