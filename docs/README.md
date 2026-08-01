@@ -9,6 +9,7 @@
 
 ## Borderless Gaming
 - [Game Compatibility](GAME_COMPATIBILITY.md) — verified/likely/partial/incompatible games, tips by genre, how ClipCursor release works
+- [Host Mode & Input Isolation](vision/HOST_MODE_ISOLATION.md) — research on what it would take to support the Raw Input games listed as incompatible
 
 ## Architecture
 - [Architecture Overview](architecture/architecture.md) — codebase structure, QML/Python bridge, widget system, borderless module
@@ -29,6 +30,8 @@
 - [Modular Control Surface](vision/MODULAR_CONTROL_SURFACE.md) — beyond gaming: video editing, drawing, DAW, streaming, any application
 - [Hardware Integration](vision/HARDWARE_INTEGRATION.md) — wrapping XAC, QuadStick, and other adaptive hardware through vJoy; input pipeline architecture
 - [Keyboard Output](vision/KEYBOARD_OUTPUT.md) — native keystroke/shortcut emission via SendInput; no external dependencies; bundled in installer
+- [Host Mode & Input Isolation](vision/HOST_MODE_ISOLATION.md) — solving the Raw Input tier; VMs, cloud gaming, two-PC streaming, Linux/evdev, and a mouse-class filter driver
+- [Linux Probe Plan](vision/LINUX_PROBE_PLAN.md) — proposed weekend experiment to test EVIOCGRAB + uinput against a real EAC game
 
 ## Distribution & Sustainability
 - [Business Model](distribution/BUSINESS_MODEL.md) — freemium tiers, market research, pricing, revenue scenarios
