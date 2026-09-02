@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- **Windows 10/11** (64-bit)
+- **Windows 10/11** (64-bit), or **Linux** (see the [Linux Setup guide](LINUX.md); no driver install needed)
 - **vJoy driver** — must be installed separately from [vJoy on GitHub](https://github.com/njz3/vJoy) or [SourceForge](https://sourceforge.net/projects/vjoystick/)
 - Optional: **ViGEmBus driver** for Xbox 360 controller emulation (`pip install vgamepad` installs it)
 

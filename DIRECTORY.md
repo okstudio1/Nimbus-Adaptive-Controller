@@ -190,7 +190,7 @@ docs/
 
 | Directory | Purpose |
 |-----------|---------|
-| `tests/` | Test files (unit tests, integration tests) |
+| `tests/` | Driver diagnostics: `test_vjoy.py` (Windows), `test_uinput.py` (Linux round-trip), `probe_evdev_grab.py` (Linux EVIOCGRAB probe) |
 | `research/` | Research notes, reference materials |
 | `build/` | PyInstaller build cache (gitignored) |
 | `dist/` | Built executables and installers (gitignored) |

@@ -71,7 +71,7 @@ Users build their own controller layout by dragging, dropping, and resizing widg
 - **Proportional Scaling**: All UI elements scale via `controller.scaled()` and View > Size presets; preference persists
 - **Status Display**: vJoy/ViGEm connection status and real-time value monitoring
 - **Keyboard Shortcuts**: ESC to exit, SPACE to center
-- **Game Focus Mode**: Prevents Nimbus Adaptive Controller from stealing focus from games (Windows only)
+- **Game Focus Mode**: Prevents Nimbus Adaptive Controller from stealing focus from games (Windows, and X11 sessions on Linux)
 - **Borderless Gaming**: Auto-detect games, strip window borders, and continuously release cursor lock (View → Borderless Gaming)
 
 ## Accessibility
@@ -125,7 +125,7 @@ When playing games that pause or lose input when unfocused, enable **Game Focus 
 - Works with most games, though some that pause instantly on focus loss may still notice the brief switch
 - Setting is saved and persists across sessions
 
-**Note:** This feature is only available on Windows. On other platforms, the menu option will be disabled.
+**Note:** Available on Windows and on X11 sessions on Linux (where it uses Qt's `WindowDoesNotAcceptFocus` flag). Under Wayland the compositor controls focus, so the menu option is disabled.
 
 ## Linux Support
 
@@ -134,7 +134,7 @@ Nimbus runs natively on Linux. The output layer uses the kernel's `uinput` modul
 - **Xbox 360 gamepad (uinput)** — appears as `Microsoft X-Box 360 pad`; the default for `xbox`, `adaptive`, and `custom` profiles. Works with Steam Input and Proton out of the box.
 - **Generic joystick (uinput)** — 8 axes and 56 buttons for flight sims and emulators.
 
-No driver install and no compiled dependencies. If Steam is installed, `/dev/uinput` access is already granted; otherwise install the one-line udev rule in `build_tools/linux/`. Game Focus Mode, Borderless Gaming, and Full Game Mode remain Windows-only. Full instructions: [docs/setup/LINUX.md](docs/setup/LINUX.md).
+No driver install and no compiled dependencies. If Steam is installed, `/dev/uinput` access is already granted; otherwise install the one-line udev rule in `build_tools/linux/`. The **Game Mode** button (controller-mode enforcement) and Game Focus Mode (X11) work on Linux; Borderless Gaming and cursor release remain Windows-only. Full instructions: [docs/setup/LINUX.md](docs/setup/LINUX.md).
 
 ## Roadmap & Vision
 

@@ -32,7 +32,7 @@
 - [Hardware Integration](vision/HARDWARE_INTEGRATION.md) — wrapping XAC, QuadStick, and other adaptive hardware through vJoy; input pipeline architecture
 - [Keyboard Output](vision/KEYBOARD_OUTPUT.md) — native keystroke/shortcut emission via SendInput; no external dependencies; bundled in installer
 - [Host Mode & Input Isolation](vision/HOST_MODE_ISOLATION.md) — solving the Raw Input tier; VMs, cloud gaming, two-PC streaming, Linux/evdev, and a mouse-class filter driver
-- [Linux Probe Plan](vision/LINUX_PROBE_PLAN.md) — proposed weekend experiment to test EVIOCGRAB + uinput against a real EAC game
+- [Linux Probe Plan](vision/LINUX_PROBE_PLAN.md) — EVIOCGRAB + uinput experiment against a real EAC game; results so far: uinput pad recognised by SDL/Steam, grab isolation confirmed, game session pending
 
 ## Distribution & Sustainability
 - [Business Model](distribution/BUSINESS_MODEL.md) — freemium tiers, market research, pricing, revenue scenarios

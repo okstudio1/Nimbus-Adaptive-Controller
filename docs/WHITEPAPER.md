@@ -249,6 +249,8 @@ The Nimbus window's extended style is augmented with `WS_EX_NOACTIVATE`, and `WM
 
 This design supersedes an earlier (v1.4.0) save-and-restore-foreground approach, which was correct in principle but produced a sub-100-ms focus blip on every click. The blip was sufficient to trigger pause menus in titles such as Minecraft. The current `WS_EX_NOACTIVATE` design eliminates the blip entirely. Implementation is in `src/window_utils.py`.
 
+On Linux under X11 the same outcome needs no platform code: setting Qt's `WindowDoesNotAcceptFocus` flag on the main window clears the `WM_HINTS` input flag, after which the window still receives pointer events but the window manager never assigns it keyboard focus (measured: the previously active window stays active across clicks on Nimbus). Wayland compositors own focus policy, so the mode is reported unavailable there. The controller-mode keep-alive that complements it on Windows (`src/mouse_hider.py`) is provided off Windows by the driver-agnostic `src/controller_pulse.py`, which drives the uinput pad through the same interface API.
+
 ---
 
 ## 10. Accessibility Considerations

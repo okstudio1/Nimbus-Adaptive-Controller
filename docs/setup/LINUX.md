@@ -131,7 +131,9 @@ game entirely (an `EVIOCGRAB` exclusive grab) is discussed in
 [docs/vision/HOST_MODE_ISOLATION.md](../vision/HOST_MODE_ISOLATION.md) and
 [docs/vision/LINUX_PROBE_PLAN.md](../vision/LINUX_PROBE_PLAN.md). A safe
 probe for it lives in `tests/probe_evdev_grab.py`; it grabs a virtual mouse
-rather than yours and needs your user in the `input` group:
+rather than yours, passes on X11 (a grabbed device becomes invisible to the
+desktop while the grabber still reads it), and needs your user in the
+`input` group:
 
 ```bash
 sudo usermod -aG input $USER    # then log out and back in

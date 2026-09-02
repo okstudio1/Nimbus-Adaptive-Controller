@@ -13,7 +13,9 @@ underlying subsystems:
   automatically on Linux)
 * :mod:`~src.borderless` — borderless windowed mode + ClipCursor release
 * :mod:`~src.mouse_hider` — controller-mode keep-alive (game voluntarily
-  releases the mouse)
+  releases the mouse) with Win32 mouse hook and hotkey (Windows)
+* :mod:`~src.controller_pulse` — the same keep-alive without the Win32
+  pieces, used on every other platform
 * :mod:`~src.window_utils` — ``WS_EX_NOACTIVATE`` "Game Focus" mode
 * :class:`~src.config.ControllerConfig` — persistent settings + profiles
 

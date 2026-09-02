@@ -23,7 +23,7 @@ Free, open-source modular virtual controller for Windows. Turns mouse/GUI input 
 - Run: `python run.py` on Windows or `./run.sh` on Linux (auto-creates `venv/`, installs requirements, launches `src.qt_qml_app`). Modules run as packages, so keep `src.`-qualified or relative imports. Linux needs write access to `/dev/uinput` (docs/setup/LINUX.md).
 - Deps: `pip install -r requirements.txt`.
 - Package: follow `build_tools/BUILD_EXECUTABLE.md` (PyInstaller via `build_tools/Nimbus-Adaptive-Controller.spec`).
-- Tests: the `tests/` files are driver diagnostics, not an automated suite: `python tests/test_vjoy.py` needs a real vJoy install; `python tests/test_uinput.py` runs on Linux and round-trips every axis/button through the kernel. pytest is not a dependency and some scripts use stale imports. There is no CI.
+- Tests: the `tests/` files are driver diagnostics, not an automated suite: `python tests/test_vjoy.py` needs a real vJoy install; `python tests/test_uinput.py` runs on Linux and round-trips every axis/button through the kernel; `python tests/probe_evdev_grab.py` checks the EVIOCGRAB mouse-isolation mechanism (needs the `input` group and an X11 display). pytest is not a dependency and some scripts use stale imports. There is no CI.
 
 ## Conventions
 - PEP 8, type hints, and numpy-style docstrings on public classes and methods (match src/bridge.py). No linter or formatter is configured, so keep the existing style and avoid ruff/black reformatting churn.
