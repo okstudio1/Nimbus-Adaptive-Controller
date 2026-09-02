@@ -160,7 +160,7 @@ Measured on an Ubuntu 24.04 X11 desktop with Steam installed, using the shipped 
 | Criterion | Status | Evidence |
 |---|---|---|
 | **P1** mouse drives the camera via the right stick | Untested | Needs Probe 1's game session |
-| **P2** game's own mouse-look does not respond | **Blocked** | Grabbing a mouse-class evdev node needs the `input` group; `sudo usermod -aG input $USER` then log back in. A safe probe exists that grabs a *virtual* uinput mouse and checks the desktop pointer stops moving, so the real mouse is never touched. |
+| **P2** game's own mouse-look does not respond | **Mechanism PASS** (game session still pending) | `tests/probe_evdev_grab.py`: with `EVIOCGRAB` held on a mouse's evdev node, synthesised motion left the X11 desktop pointer exactly where it was while the grabbing process received every `REL_X/REL_Y` event; on release the pointer moved again. The real Logitech mouse node could also be grabbed and released. Needs the `input` group (`sudo usermod -aG input $USER`). What remains is only the in-game check that Proton/Wine sees nothing either, which follows from the X server seeing nothing. |
 | **P3** pad detected as a standard Xbox controller | **PASS** | SDL: `Xbox 360 Controller`, `SDL_IsGameController() == true`, built-in mapping, all controls verified. Steam Input logged the pad and loaded `configset_controller_xbox360.vdf` on app start. **F2 is ruled out.** |
 | **P4** EAC accepts the session | Untested | Needs Elden Ring under Proton |
 | **P5** UI renders on Wayland | Untested | X11 host; nested `gnome-shell --wayland` exited immediately. The Qt Wayland plugin ships in the venv. |
