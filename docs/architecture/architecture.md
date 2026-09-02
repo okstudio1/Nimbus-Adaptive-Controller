@@ -200,6 +200,13 @@ Driver-agnostic controller-mode keep-alive, the core of Full Game Mode without t
 - Works against any interface exposing `set_left_stick` / `set_button` / `current_values` (ViGEm or uinput Xbox). The bridge uses it when `sys.platform != "win32"`; Windows keeps `mouse_hider.py`, which bundles the same pulse with the mouse hook, ClipCursor release, and the emergency hotkey.
 - On X11 the bridge pairs it with `Qt.WindowDoesNotAcceptFocus` on the main window (`_apply_no_focus_flag`) so clicking Nimbus never takes keyboard focus from the game.
 
+### `mouse_isolation` (`src/mouse_isolation.py`)
+
+Linux-only exclusive grab of the physical mouse (`EVIOCGRAB`), the input half of the host-mode research:
+- `list_pointer_devices()` reads `/proc/bus/input/devices`; `MouseIsolation.start()` opens and grabs every pointer node (or a given list), creating a uinput pass-through keyboard for devices that also carry keyboard keys so typing survives. A reader thread coalesces `REL_X/REL_Y` per report and calls `on_motion` / `on_button` / `on_wheel`; `Ctrl+Alt+F12` (seen on grabbed devices, or on other keyboards opened read-only) and any reader error call `stop()`. `stop_all()` is registered with `atexit`; the kernel also drops the grab when the fd closes.
+- The bridge marshals the callbacks through `_IsolationRelay` (queued signals), keeps a software cursor (`isolationCursorX/Y`, drawn by a `Canvas` in `Main.qml`), and delivers synthetic `QMouseEvent`s / `QWheelEvent`s to the QML window with `QCoreApplication.sendEvent`, including X11-style double-click synthesis. `setCursorPos` warps move the software cursor while isolated so the joystick lock mode keeps working.
+- Slots: `isMouseIsolationAvailable`, `getMouseIsolationDevices`, `startMouseIsolation`, `stopMouseIsolation`, `isMouseIsolationActive`; property `mouseIsolationActive`; signal `mouseIsolationChanged`. `startFullGameMode` enables it on Linux unless `controller.game_mode_isolate_mouse` is false.
+
 ### `ControllerBridge` (`src/bridge.py`)
 
 Qt `QObject` exposed to QML as `controller`:

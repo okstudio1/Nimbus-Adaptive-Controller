@@ -251,6 +251,8 @@ This design supersedes an earlier (v1.4.0) save-and-restore-foreground approach,
 
 On Linux under X11 the same outcome needs no platform code: setting Qt's `WindowDoesNotAcceptFocus` flag on the main window clears the `WM_HINTS` input flag, after which the window still receives pointer events but the window manager never assigns it keyboard focus (measured: the previously active window stays active across clicks on Nimbus). Wayland compositors own focus policy, so the mode is reported unavailable there. The controller-mode keep-alive that complements it on Windows (`src/mouse_hider.py`) is provided off Windows by the driver-agnostic `src/controller_pulse.py`, which drives the uinput pad through the same interface API.
 
+Linux adds a mechanism Windows cannot offer in user mode: *Mouse Isolation* (`src/mouse_isolation.py`). An exclusive `EVIOCGRAB` on the pointer's evdev node removes the physical mouse from the X server, the compositor, and every game; Nimbus reads the deltas itself, maintains a software cursor, and delivers synthetic `QMouseEvent`s to its own window so the widget layer is unchanged. Keys from combined keyboard-and-touchpad devices are re-emitted through a uinput pass-through keyboard, `Ctrl+Alt+F12` releases the grab from any keyboard, and the kernel drops the grab automatically when the process ends. This closes the Raw Input tier described in § 1 on Linux.
+
 ---
 
 ## 10. Accessibility Considerations

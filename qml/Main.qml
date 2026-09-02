@@ -2,6 +2,7 @@ import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Controls.Basic 2.15 as Basic
 import QtQuick.Layouts 1.15
+import QtQuick.Shapes 1.15
 import "components" as Comp
 import "layouts" as Layouts
 
@@ -101,6 +102,9 @@ ApplicationWindow {
         function onNoFocusModeChanged(enabled) {
             // Update menu checkbox when mode changes
             noFocusModeItem.checked = enabled
+        }
+        function onMouseIsolationChanged(active) {
+            mouseIsolationItem.checked = active
         }
         function onControllerModeChanged(active) {
             root.gameModeActive = active
@@ -633,6 +637,24 @@ ApplicationWindow {
                     viewMenu.close()
                     Qt.callLater(function(){ 
                         if (controller) controller.noFocusMode = checked
+                    })
+                }
+            }
+            MenuItem {
+                id: mouseIsolationItem
+                text: qsTr("Isolate Mouse (grab physical mouse)")
+                checkable: true
+                checked: controller ? controller.mouseIsolationActive : false
+                enabled: controller ? controller.isMouseIsolationAvailable() : false
+                onTriggered: {
+                    viewMenu.close()
+                    Qt.callLater(function(){
+                        if (!controller) return
+                        if (mouseIsolationItem.checked) {
+                            if (!controller.startMouseIsolation()) mouseIsolationItem.checked = false
+                        } else {
+                            controller.stopMouseIsolation()
+                        }
                     })
                 }
             }
@@ -1315,6 +1337,37 @@ ApplicationWindow {
 
             // Right padding
             Item { width: 4; height: parent.height }
+        }
+    }
+
+    // Software cursor shown while the physical mouse is grabbed (Mouse Isolation, Linux).
+    // The bridge delivers synthetic mouse events in window coordinates at this position;
+    // this item only draws. It lives in the window overlay so it uses window coordinates
+    // (the content item starts below the menu bar) and stays above open menus.
+    Shape {
+        id: isolationCursor
+        objectName: "isolationCursor"
+        parent: Overlay.overlay
+        visible: controller ? controller.mouseIsolationActive : false
+        x: controller ? controller.isolationCursorX : 0
+        y: controller ? controller.isolationCursorY : 0
+        width: 20
+        height: 26
+        z: 10000
+        enabled: false
+        antialiasing: true
+        ShapePath {
+            strokeColor: "black"
+            strokeWidth: 1.5
+            fillColor: "white"
+            startX: 1; startY: 1
+            PathLine { x: 1; y: 20 }
+            PathLine { x: 6; y: 15.5 }
+            PathLine { x: 9.5; y: 23 }
+            PathLine { x: 12.5; y: 21.7 }
+            PathLine { x: 9; y: 14.2 }
+            PathLine { x: 16; y: 14.2 }
+            PathLine { x: 1; y: 1 }
         }
     }
 

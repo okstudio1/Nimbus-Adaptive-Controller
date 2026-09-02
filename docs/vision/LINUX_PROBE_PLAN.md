@@ -116,6 +116,8 @@ F4 is worth calling out in advance because it is certain to happen and it change
 
 The consequence: Nimbus would read raw deltas from evdev directly and drive its own on-screen cursor and stick position internally, rather than relying on Qt's mouse handling. That is arguably cleaner, since it is what the virtual stick conceptually wants anyway, but it is a real change to how [bridge.py](../../src/bridge.py) receives input and it should be scoped, not discovered late.
 
+**Done (2026-09):** `src/mouse_isolation.py` grabs the pointer devices and the bridge keeps a software cursor, delivering synthetic `QMouseEvent`s to the QML window. Verified end to end: a grabbed virtual device steered the software cursor onto the Game Mode button and clicked it while the desktop pointer stayed still.
+
 ---
 
 ## Probe 2: Can the Nimbus UI live on Wayland?
@@ -160,7 +162,7 @@ Measured on an Ubuntu 24.04 X11 desktop with Steam installed, using the shipped 
 | Criterion | Status | Evidence |
 |---|---|---|
 | **P1** mouse drives the camera via the right stick | Untested | Needs Probe 1's game session |
-| **P2** game's own mouse-look does not respond | **Mechanism PASS** (game session still pending) | `tests/probe_evdev_grab.py`: with `EVIOCGRAB` held on a mouse's evdev node, synthesised motion left the X11 desktop pointer exactly where it was while the grabbing process received every `REL_X/REL_Y` event; on release the pointer moved again. The real Logitech mouse node could also be grabbed and released. Needs the `input` group (`sudo usermod -aG input $USER`). What remains is only the in-game check that Proton/Wine sees nothing either, which follows from the X server seeing nothing. |
+| **P2** game's own mouse-look does not respond | **Mechanism PASS, shipped** as Mouse Isolation (game session still pending) | `tests/probe_evdev_grab.py`: with `EVIOCGRAB` held on a mouse's evdev node, synthesised motion left the X11 desktop pointer exactly where it was while the grabbing process received every `REL_X/REL_Y` event; on release the pointer moved again. The real Logitech mouse node could also be grabbed and released. Needs the `input` group (`sudo usermod -aG input $USER`). What remains is only the in-game check that Proton/Wine sees nothing either, which follows from the X server seeing nothing. |
 | **P3** pad detected as a standard Xbox controller | **PASS** | SDL: `Xbox 360 Controller`, `SDL_IsGameController() == true`, built-in mapping, all controls verified. Steam Input logged the pad and loaded `configset_controller_xbox360.vdf` on app start. **F2 is ruled out.** |
 | **P4** EAC accepts the session | Untested | Needs Elden Ring under Proton |
 | **P5** UI renders on Wayland | Untested | X11 host; nested `gnome-shell --wayland` exited immediately. The Qt Wayland plugin ships in the venv. |

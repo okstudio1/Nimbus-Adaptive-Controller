@@ -110,7 +110,7 @@ L1 dominates, and L2 is close to pointless on inspection: the games that would f
 
 | Windows mechanism in Nimbus today | Linux equivalent |
 |---|---|
-| `WH_MOUSE_LL` suppression hook (fails on Raw Input) | `EVIOCGRAB` exclusive grab via python-evdev `InputDevice.grab()`. Only one process may hold it, and nothing else receives events until released. |
+| `WH_MOUSE_LL` suppression hook (fails on Raw Input) | `EVIOCGRAB` exclusive grab. Only one process may hold it, and nothing else receives events until released. **Shipped (2026-09):** `src/mouse_isolation.py`, pure-Python ioctl, no python-evdev, with keyboard pass-through for combo devices and a `Ctrl+Alt+F12` release. |
 | `borderless.py`: ClipCursor polling, borderless conversion | Delete. gamescope and Wayland handle confinement and fullscreen. |
 | `window_utils.py`: `WS_EX_NOACTIVATE` focus juggling | Largely delete. Wayland clients cannot steal focus the way Win32 windows can. |
 | `mouse_hider.py` | Delete. |
@@ -151,11 +151,11 @@ The output half of L1 is no longer a plan. Nimbus runs on Linux (`docs/setup/LIN
 |---|---|
 | A uinput pad is seen as a standard gamepad | **Confirmed.** SDL reports `Xbox 360 Controller`, `SDL_IsGameController() == true`, with its built-in X360 mapping; every stick, trigger, D-pad direction, and button lands on the expected SDL control. Steam's `controller.txt` logged the pad and loaded its `configset_controller_xbox360.vdf` the moment the app started. Proton uses the same SDL path. |
 | `window_utils.py` can "largely" be deleted | **Confirmed for X11.** A Qt window with `Qt.WindowDoesNotAcceptFocus` keeps receiving pointer events while the previously active window keeps keyboard focus, which is Game Focus Mode in one flag. The bridge now uses it off Windows. Wayland is untested; compositors decide focus there. |
-| `EVIOCGRAB` isolates the mouse from everything else | **Confirmed.** `tests/probe_evdev_grab.py` grabbed a mouse's evdev node and synthesised motion: the X11 desktop pointer did not move at all while the grabbing process received every `REL_X/REL_Y` event; releasing the grab restored normal pointer movement. The real Logitech mouse could be grabbed the same way. Reading mouse-class nodes needs the `input` group (or a udev rule); no root, no driver. The one-line claim in the table above holds. |
+| `EVIOCGRAB` isolates the mouse from everything else | **Confirmed.** `tests/probe_evdev_grab.py` grabbed a mouse's evdev node and synthesised motion: the X11 desktop pointer did not move at all while the grabbing process received every `REL_X/REL_Y` event; releasing the grab restored normal pointer movement. The real Logitech mouse could be grabbed the same way. Reading mouse-class nodes needs the `input` group (or a udev rule); no root, no driver. The one-line claim in the table above holds. **Shipped** as View > Isolate Mouse and as part of Game Mode on Linux. |
 | Wayland form-factor tax (Probe 2) | **Not measured** (X11 host; a nested GNOME Wayland shell would not start). Note that the main window does not use always-on-top or absolute positioning today, so only "does the UI render" is really at stake. |
 | Controller-mode enforcement is Windows-only | **No longer.** The keep-alive pulse is driver-agnostic (`src/controller_pulse.py`) and drives the uinput pad; only the Win32 mouse hook and ClipCursor release stay Windows-specific. |
 
-Two nuances worth keeping in mind for L1. Under Wine/Proton, `ClipCursor` becomes an X pointer grab, so without `EVIOCGRAB` the confinement problem looks the same as on Windows and the controller-mode trick is the counter-measure. And the F4 consequence in the probe plan still holds: once the physical mouse is grabbed, Nimbus's own window stops receiving it and must read evdev deltas itself.
+Two nuances worth keeping in mind for L1. Under Wine/Proton, `ClipCursor` becomes an X pointer grab, so without `EVIOCGRAB` the confinement problem looks the same as on Windows and the controller-mode trick is the counter-measure. The F4 consequence in the probe plan is handled the way it predicted: once the physical mouse is grabbed, Nimbus's own window stops receiving it, so the bridge reads the evdev deltas itself, keeps a software cursor, and delivers synthetic Qt mouse events to its window. The widgets are unchanged.
 
 ## 6. Assessment
 

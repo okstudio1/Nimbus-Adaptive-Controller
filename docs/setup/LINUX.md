@@ -114,11 +114,50 @@ Details that differ from Windows:
   30 Hz sub-deadzone left-stick oscillation that keeps a game with dual input
   detection in gamepad mode (Xbox prompts, no mouse chasing). Your real stick
   values are restored every tick. On X11 it also turns on Game Focus Mode for
-  the session. Click the button again to stop. There is no `Ctrl+Alt+F12`
+  the session, and by default it turns on **Mouse Isolation** (next section)
+  so the game cannot see the physical mouse at all. Click the button again to stop. There is no `Ctrl+Alt+F12`
   emergency hotkey on Linux; the button and quitting the app are the stop
   paths, and both re-centre the stick.
 - If the current profile outputs to the generic joystick, Game Mode creates
   the Xbox pad on demand and removes it again when you stop.
+
+## Mouse Isolation (the physical mouse disappears from the game)
+
+**View > Isolate Mouse** grabs every physical pointer device with the kernel's
+`EVIOCGRAB`, which is exclusive: the X server, a Wayland compositor, Steam,
+and any game (native or Proton) stop receiving the mouse entirely. Nimbus
+reads the device itself, draws its own arrow cursor inside its window, and
+feeds the movement and clicks to its widgets, so joysticks, buttons, sliders,
+and the triple-click lock work exactly as before. This is the Linux answer to
+the Raw Input tier that cannot be fixed on Windows: the game is not fought,
+it is simply blind.
+
+- **Game Mode turns it on automatically.** Set
+  `controller.game_mode_isolate_mouse` to `false` in `controller_config.json`
+  to opt out. Clicking Game Mode again, or unticking View > Isolate Mouse,
+  releases the grab and puts the real pointer where the software cursor was.
+- **Emergency release: `Ctrl+Alt+F12`** from any keyboard. The kernel also
+  drops the grab the moment Nimbus exits or is killed, so the mouse can never
+  stay stuck.
+- **Keyboard-and-touchpad combos** (Logitech K400, laptops) share one device
+  node. Nimbus grabs it but re-emits the keys through a virtual "passthrough"
+  keyboard, so typing keeps working while only the pointer is isolated. If
+  the passthrough device cannot be created, that device is skipped rather
+  than silencing your keyboard.
+- **Cursor speed**: `controller.isolation_cursor_speed` (default `1.0`)
+  multiplies the raw mouse deltas.
+- **Requirements**: your user in the `input` group (below) and write access
+  to `/dev/uinput`. Works on X11 and Wayland; on Wayland the real pointer
+  cannot be parked, it simply stays where it was.
+
+```bash
+sudo usermod -aG input $USER                  # then log out and back in
+./venv/bin/python tests/probe_evdev_grab.py   # optional: verify the grab mechanism
+```
+
+While isolated, the desktop pointer is frozen on purpose. Everything you need
+in order to stop is inside the Nimbus window (the Game Mode button, the View
+menu) and reachable with the software cursor.
 
 ## What is Windows-only
 
@@ -126,19 +165,10 @@ Borderless window conversion, ClipCursor release polling, and the low-level
 mouse hook rely on Win32 APIs and are not available. Under Wine/Proton a
 game's `ClipCursor` becomes an X pointer grab, so a game that confines the
 pointer while in mouse mode behaves as it does on Windows; controller mode
-is the counter-measure. The design that removes the physical mouse from the
-game entirely (an `EVIOCGRAB` exclusive grab) is discussed in
+is the counter-measure, and Mouse Isolation removes the mouse from the
+equation entirely. The research behind it is in
 [docs/vision/HOST_MODE_ISOLATION.md](../vision/HOST_MODE_ISOLATION.md) and
-[docs/vision/LINUX_PROBE_PLAN.md](../vision/LINUX_PROBE_PLAN.md). A safe
-probe for it lives in `tests/probe_evdev_grab.py`; it grabs a virtual mouse
-rather than yours, passes on X11 (a grabbed device becomes invisible to the
-desktop while the grabber still reads it), and needs your user in the
-`input` group:
-
-```bash
-sudo usermod -aG input $USER    # then log out and back in
-./venv/bin/python tests/probe_evdev_grab.py
-```
+[docs/vision/LINUX_PROBE_PLAN.md](../vision/LINUX_PROBE_PLAN.md).
 
 ## Steam and Proton
 
@@ -174,5 +204,7 @@ session misbehaves.
 | Device shows up but the game ignores it | Try the other output mode; some engines only scan for gamepads (Xbox mode) or only for joysticks (generic mode) |
 | Two Nimbus controllers listed | An older app instance is still running; close it |
 | Game Focus Mode is greyed out | You are on Wayland; use an X11 session or run the game under `gamescope` |
+| Isolate Mouse fails with "no read access to /dev/input/event*" | Add your user to the `input` group (`sudo usermod -aG input $USER`) and log back in |
+| Keyboard dead while isolated | The pass-through keyboard could not be created; check `/dev/uinput` access. Press `Ctrl+Alt+F12` or quit Nimbus to release |
 | Game shows keyboard prompts again after a while | Some games drop controller mode on any mouse click; keep Game Mode running and avoid clicking inside the game window |
 | Cursor moves the game camera as well as the on-screen stick | Expected today; see the host-mode research doc for the evdev grab plan |

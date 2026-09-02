@@ -36,6 +36,7 @@ Python backend — Qt/QML bridge, configuration, hardware interfaces.
 | `vigem_interface.py` | ViGEm Xbox controller emulation (optional) |
 | `uinput_interface.py` | Linux `uinput` back ends: Xbox 360 pad + 8-axis joystick (stand-ins for ViGEm/vJoy) |
 | `controller_pulse.py` | Driver-agnostic controller keep-alive pulse (controller mode off Windows) |
+| `mouse_isolation.py` | Linux `EVIOCGRAB` of the physical mouse + keyboard pass-through (Mouse Isolation) |
 | `qt_dialogs.py` | Native Qt dialogs — Joystick Settings, Button Settings, Axis Mapping |
 | `qt_widgets.py` | Custom Qt widget components |
 | `borderless.py` | Borderless window mode + ClipCursor release (Windows) |

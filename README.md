@@ -134,7 +134,7 @@ Nimbus runs natively on Linux. The output layer uses the kernel's `uinput` modul
 - **Xbox 360 gamepad (uinput)** — appears as `Microsoft X-Box 360 pad`; the default for `xbox`, `adaptive`, and `custom` profiles. Works with Steam Input and Proton out of the box.
 - **Generic joystick (uinput)** — 8 axes and 56 buttons for flight sims and emulators.
 
-No driver install and no compiled dependencies. If Steam is installed, `/dev/uinput` access is already granted; otherwise install the one-line udev rule in `build_tools/linux/`. The **Game Mode** button (controller-mode enforcement) and Game Focus Mode (X11) work on Linux; Borderless Gaming and cursor release remain Windows-only. Full instructions: [docs/setup/LINUX.md](docs/setup/LINUX.md).
+No driver install and no compiled dependencies. If Steam is installed, `/dev/uinput` access is already granted; otherwise install the one-line udev rule in `build_tools/linux/`. The **Game Mode** button (controller-mode enforcement) and Game Focus Mode (X11) work on Linux, and **Mouse Isolation** grabs the physical mouse with `EVIOCGRAB` so no game can see it at all, which is the fix for the Raw Input tier that is impossible on Windows. Borderless Gaming and cursor release remain Windows-only. Full instructions: [docs/setup/LINUX.md](docs/setup/LINUX.md).
 
 ## Roadmap & Vision
 
