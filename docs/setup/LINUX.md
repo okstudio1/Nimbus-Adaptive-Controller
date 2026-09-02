@@ -159,6 +159,11 @@ While isolated, the desktop pointer is frozen on purpose. Everything you need
 in order to stop is inside the Nimbus window (the Game Mode button, the View
 menu) and reachable with the software cursor.
 
+Verified in a real game: with Carrier Command 2 running under Proton, its
+mouse-look camera stopped reacting to a grabbed mouse completely while still
+reacting to the same mouse before and after the grab, and the game showed
+Steam's "Controller Connected: Xbox 360 Controller" toast for the Nimbus pad.
+
 ## What is Windows-only
 
 Borderless window conversion, ClipCursor release polling, and the low-level

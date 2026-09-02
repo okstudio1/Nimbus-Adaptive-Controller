@@ -37,7 +37,7 @@ Games capture the mouse using one of three mechanisms:
 - **Raw Input: OFF** in the game's mouse/video settings — `WH_MOUSE_LL` intercepts `WM_MOUSEMOVE` but cannot intercept `WM_INPUT` (raw device events)
 - Game must be in **windowed or borderless** mode (not exclusive fullscreen)
 
-**On Linux** no driver is needed: the Xbox pad is a kernel `uinput` device, and the same Game Mode button runs controller-mode enforcement, an X11 Game Focus Mode equivalent, and **Mouse Isolation**, an exclusive `EVIOCGRAB` of the physical mouse. With the mouse isolated, the Raw Input mechanism behind the Incompatible tier below has nothing to read; anti-cheat support under Proton is the remaining per-game question. Borderless conversion and cursor release are Windows-only. See [Linux Setup](setup/LINUX.md).
+**On Linux** no driver is needed: the Xbox pad is a kernel `uinput` device, and the same Game Mode button runs controller-mode enforcement, an X11 Game Focus Mode equivalent, and **Mouse Isolation**, an exclusive `EVIOCGRAB` of the physical mouse. With the mouse isolated, the Raw Input mechanism behind the Incompatible tier below has nothing to read; anti-cheat support under Proton is the remaining per-game question. Verified with **Carrier Command 2** (Proton): the cockpit free-look stopped responding to a grabbed mouse entirely (1 changed frame sample versus 23,845 ungrabbed), and the game recognised the uinput pad as an Xbox 360 controller. Borderless conversion and cursor release are Windows-only. See [Linux Setup](setup/LINUX.md).
 
 ### Emergency stop
 Press **Ctrl+Alt+F12** at any time to instantly kill Controller Mode and restore normal mouse behavior. This hotkey works even if Nimbus doesn't have focus.
