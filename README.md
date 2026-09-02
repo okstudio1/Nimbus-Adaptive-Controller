@@ -127,6 +127,15 @@ When playing games that pause or lose input when unfocused, enable **Game Focus 
 
 **Note:** This feature is only available on Windows. On other platforms, the menu option will be disabled.
 
+## Linux Support
+
+Nimbus runs natively on Linux. The output layer uses the kernel's `uinput` module in place of the vJoy and ViGEmBus drivers, so Steam, Proton, and native games see a regular controller:
+
+- **Xbox 360 gamepad (uinput)** — appears as `Microsoft X-Box 360 pad`; the default for `xbox`, `adaptive`, and `custom` profiles. Works with Steam Input and Proton out of the box.
+- **Generic joystick (uinput)** — 8 axes and 56 buttons for flight sims and emulators.
+
+No driver install and no compiled dependencies. If Steam is installed, `/dev/uinput` access is already granted; otherwise install the one-line udev rule in `build_tools/linux/`. Game Focus Mode, Borderless Gaming, and Full Game Mode remain Windows-only. Full instructions: [docs/setup/LINUX.md](docs/setup/LINUX.md).
+
 ## Roadmap & Vision
 
 Nimbus Adaptive Controller is evolving beyond a virtual controller into a broader **adaptive input platform**. The following directions are actively being explored and documented.
@@ -181,7 +190,7 @@ Nimbus Adaptive Controller is and will remain **free for all accessibility use**
 
 #### Prerequisites
 1. **Python 3.8+** - Required for the application
-2. **VJoy Driver** - Download and install from [VJoy Official Site](http://vjoystick.sourceforge.net/)
+2. **VJoy Driver** (Windows) - Download and install from [VJoy Official Site](http://vjoystick.sourceforge.net/). Not needed on Linux, which uses the kernel `uinput` module (see [Linux Setup](docs/setup/LINUX.md)).
 3. **Git** (optional) - For cloning the repository
 
 #### Setup Instructions
@@ -204,7 +213,8 @@ Nimbus Adaptive Controller is and will remain **free for all accessibility use**
 
 4. **Run the application (Qt Quick UI)**:
    ```bash
-   python run.py
+   python run.py      # Windows
+   ./run.sh           # Linux / macOS
    ```
    
    Notes:

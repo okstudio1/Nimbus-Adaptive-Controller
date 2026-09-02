@@ -3,6 +3,7 @@ VJoy interface wrapper for sending virtual controller signals.
 Provides a safe and stable interface to the VJoy driver.
 """
 
+import sys
 import time
 import threading
 from typing import Optional, Tuple, Dict, Any
@@ -25,10 +26,13 @@ try:
         VJOY_AVAILABLE = False
         VJOY_API_VERSION = "none"
         print("Warning: PyVjoy version incompatible. Missing VJoyDevice class.")
-except ImportError as e:
+except Exception as e:
+    # ImportError when the package is missing; OSError when pyvjoy is installed
+    # but its Windows DLL cannot be loaded (e.g. on Linux).
     VJOY_AVAILABLE = False
     VJOY_API_VERSION = "none"
-    print(f"Warning: PyVjoy not available: {e}")
+    if sys.platform == "win32":
+        print(f"Warning: PyVjoy not available: {e}")
 
 
 class VJoyInterface:
@@ -87,6 +91,9 @@ class VJoyInterface:
         
         if not VJOY_AVAILABLE:
             print("VJoy interface not available - running in simulation mode")
+            if sys.platform != "win32":
+                print("(vJoy is a Windows driver; on Linux the bridge uses src/uinput_interface.py instead)")
+                return
             print("To enable VJoy:")
             print("1. Download and install VJoy driver from: http://vjoystick.sourceforge.net/")
             print("2. Configure VJoy device #1 with at least 6 axes")

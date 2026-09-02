@@ -185,10 +185,18 @@ Xbox 360 controller emulation via ViGEm/vgamepad:
 - Auto-selected for `xbox`, `adaptive`, and `custom` layout types when available
 - Provides XInput compatibility for games like No Man's Sky
 
+### `UInputXboxInterface` / `UInputJoystickInterface` (`src/uinput_interface.py`)
+
+Linux back ends over the kernel `uinput` module (pure Python: `ioctl` + `struct`, no python-evdev):
+- `UInputXboxInterface` mirrors `ViGEmInterface`'s API and creates a `Microsoft X-Box 360 pad` (xpad VID/PID, so SDL/Steam apply their built-in mapping). Sticks are negated on Y to convert XInput `+Y == up` to evdev `+Y == down`; the D-pad drives `ABS_HAT0X/Y`.
+- `UInputJoystickInterface` mirrors `VJoyInterface`'s API: 8 axes (`ABS_X..ABS_RZ`, `ABS_THROTTLE`, `ABS_RUDDER`) with the vJoy `0..axis_range` scaling, 56 buttons (`BTN_JOYSTICK` block + `BTN_TRIGGER_HAPPY1..40`).
+- The bridge chooses them through `_create_xbox_interface()` / `_create_joystick_interface()` when `UINPUT_AVAILABLE`; `XBOX_OUTPUT_AVAILABLE = VIGEM_AVAILABLE or UINPUT_AVAILABLE` drives the "vigem" mode availability. Only the active device is kept alive on Linux (`_retire_inactive_interface()`).
+- Setup, permissions, and verification: [docs/setup/LINUX.md](../setup/LINUX.md)
+
 ### `ControllerBridge` (`src/bridge.py`)
 
 Qt `QObject` exposed to QML as `controller`:
-- Owns `ControllerConfig` + controller interface (VJoy or ViGEm)
+- Owns `ControllerConfig` + controller interface (VJoy or ViGEm on Windows, uinput on Linux)
 - **Properties**: `scaleFactor`, `debugBorders`, `buttonsVersion`, `noFocusMode`
 - **Axis slots**: `setLeftStick`, `setRightStick`, `setThrottle`, `setRudder`, `setAxis`
 - **Button slot**: `setButton(id, pressed)`

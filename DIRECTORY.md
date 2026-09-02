@@ -34,6 +34,7 @@ Python backend — Qt/QML bridge, configuration, hardware interfaces.
 | `config.py` | Configuration manager — profiles, settings, JSON persistence |
 | `vjoy_interface.py` | vJoy driver communication — axis/button output |
 | `vigem_interface.py` | ViGEm Xbox controller emulation (optional) |
+| `uinput_interface.py` | Linux `uinput` back ends: Xbox 360 pad + 8-axis joystick (stand-ins for ViGEm/vJoy) |
 | `qt_dialogs.py` | Native Qt dialogs — Joystick Settings, Button Settings, Axis Mapping |
 | `qt_widgets.py` | Custom Qt widget components |
 | `borderless.py` | Borderless window mode + ClipCursor release (Windows) |
@@ -50,6 +51,7 @@ Python backend — Qt/QML bridge, configuration, hardware interfaces.
 - **`ControllerBridge`** (`bridge.py`) — Singleton exposed to QML as `controller`. All QML↔Python communication goes through here.
 - **`ControllerConfig`** (`config.py`) — Profile management, settings persistence, sensitivity curve calculations.
 - **`VJoyInterface`** (`vjoy_interface.py`) — Low-level vJoy API wrapper.
+- **`UInputXboxInterface` / `UInputJoystickInterface`** (`uinput_interface.py`) — Linux equivalents of ViGEm/vJoy over `/dev/uinput`, same method names.
 - **`TelemetryClient`** (`telemetry.py`) — Opt-in event tracking with local buffer and batch HTTP flush.
 - **`CloudClient`** (`cloud_client.py`) — Supabase auth, OAuth, token vault, profile sync.
 - **`UpdateChecker`** (`updater.py`) — Background version manifest fetch with QML signal integration.

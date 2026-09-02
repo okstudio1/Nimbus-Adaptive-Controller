@@ -575,7 +575,7 @@ ApplicationWindow {
                 
                 MenuItem {
                     id: outputVjoyItem
-                    text: qsTr("vJoy (DirectInput)")
+                    text: controller ? controller.getOutputModeLabel("vjoy") : qsTr("vJoy (DirectInput)")
                     checkable: true
                     checked: root.outputMode === "vjoy"
                     onTriggered: {
@@ -586,7 +586,7 @@ ApplicationWindow {
                 }
                 MenuItem {
                     id: outputVigemItem
-                    text: qsTr("ViGEm Xbox 360 (XInput)")
+                    text: controller ? controller.getOutputModeLabel("vigem") : qsTr("ViGEm Xbox 360 (XInput)")
                     checkable: true
                     checked: root.outputMode === "vigem"
                     enabled: controller ? controller.isVigemAvailable() : false
@@ -1166,7 +1166,7 @@ ApplicationWindow {
                 id: outputModeMenu
 
                 MenuItem {
-                    text: "vJoy (DirectInput)"
+                    text: controller ? controller.getOutputModeLabel("vjoy") : "vJoy (DirectInput)"
                     checkable: true
                     checked: root.outputMode === "vjoy"
                     onTriggered: {
@@ -1174,7 +1174,7 @@ ApplicationWindow {
                     }
                 }
                 MenuItem {
-                    text: "Xbox 360 (ViGEm)"
+                    text: controller ? controller.getOutputModeLabel("vigem") : "Xbox 360 (ViGEm)"
                     checkable: true
                     checked: root.outputMode === "vigem"
                     enabled: controller ? controller.isVigemAvailable() : false

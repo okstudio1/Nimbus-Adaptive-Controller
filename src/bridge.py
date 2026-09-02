@@ -7,6 +7,10 @@ underlying subsystems:
 
 * :class:`~src.vjoy_interface.VJoyInterface` — DirectInput virtual joystick
 * :class:`~src.vigem_interface.ViGEmInterface` — XInput Xbox 360 emulation
+* :class:`~src.uinput_interface.UInputXboxInterface` /
+  :class:`~src.uinput_interface.UInputJoystickInterface` — Linux ``uinput``
+  stand-ins for the two Windows drivers (same method names, chosen
+  automatically on Linux)
 * :mod:`~src.borderless` — borderless windowed mode + ClipCursor release
 * :mod:`~src.mouse_hider` — controller-mode keep-alive (game voluntarily
   releases the mouse)
@@ -50,9 +54,24 @@ from .qt_dialogs import AxisMappingQt, JoystickSettingsQt, ButtonSettingsQt, Sli
 # Try to import ViGEm for Xbox controller emulation (preferred for modern games)
 try:
     from .vigem_interface import ViGEmInterface, VIGEM_AVAILABLE
-except ImportError:
+except Exception:
     VIGEM_AVAILABLE = False
     ViGEmInterface = None
+
+# Linux: kernel uinput virtual devices stand in for both Windows drivers
+try:
+    from .uinput_interface import (
+        UInputXboxInterface,
+        UInputJoystickInterface,
+        UINPUT_AVAILABLE,
+    )
+except Exception:
+    UINPUT_AVAILABLE = False
+    UInputXboxInterface = None
+    UInputJoystickInterface = None
+
+# "Xbox gamepad" output exists on Windows (ViGEm) and Linux (uinput)
+XBOX_OUTPUT_AVAILABLE = VIGEM_AVAILABLE or UINPUT_AVAILABLE
 
 # Import window utilities for game focus mode (Windows only)
 try:
@@ -194,24 +213,71 @@ class ControllerBridge(QObject):
         use_vigem_config = self._config.get("controller.prefer_vigem", True)
         
         # Use ViGEm for Xbox/Adaptive/Custom profiles if available (works with XInput games like No Man's Sky)
-        if layout_type in ("xbox", "adaptive", "custom") and VIGEM_AVAILABLE and use_vigem_config:
-            print(f"Profile '{layout_type}' detected - using ViGEm Xbox controller emulation")
+        if layout_type in ("xbox", "adaptive", "custom") and XBOX_OUTPUT_AVAILABLE and use_vigem_config:
+            print(f"Profile '{layout_type}' detected - using Xbox 360 controller emulation")
             print("This provides XInput compatibility for games like No Man's Sky")
             if self._vigem is None:
-                self._vigem = ViGEmInterface(self._config)
+                self._vigem = self._create_xbox_interface()
             self._use_vigem = True
-            # Also init vJoy as fallback
-            if self._vjoy is None:
-                self._vjoy = VJoyInterface(self._config)
+            # Also init vJoy as fallback. On Linux this would be a second
+            # visible gamepad, so the joystick device is created lazily instead.
+            if self._vjoy is None and not UINPUT_AVAILABLE:
+                self._vjoy = self._create_joystick_interface()
         else:
             # Use vJoy for flight sim profiles or if ViGEm unavailable
-            if layout_type in ("xbox", "adaptive") and not VIGEM_AVAILABLE:
-                print(f"Warning: ViGEm not available for {layout_type} profile")
+            if layout_type in ("xbox", "adaptive") and not XBOX_OUTPUT_AVAILABLE:
+                print(f"Warning: Xbox controller emulation not available for {layout_type} profile")
                 print("Install with: pip install vgamepad")
                 print("Falling back to vJoy (may not work with XInput-only games)")
             if self._vjoy is None:
-                self._vjoy = VJoyInterface(self._config)
+                self._vjoy = self._create_joystick_interface()
             self._use_vigem = False
+        self._retire_inactive_interface()
+
+    def _create_xbox_interface(self):
+        """Instantiate the Xbox-gamepad back end for this platform.
+
+        Returns:
+            :class:`~src.uinput_interface.UInputXboxInterface` on Linux,
+            otherwise :class:`~src.vigem_interface.ViGEmInterface`.
+        """
+        if UINPUT_AVAILABLE and UInputXboxInterface is not None:
+            return UInputXboxInterface(self._config)
+        return ViGEmInterface(self._config)
+
+    def _create_joystick_interface(self):
+        """Instantiate the generic-joystick back end for this platform.
+
+        Returns:
+            :class:`~src.uinput_interface.UInputJoystickInterface` on Linux,
+            otherwise :class:`~src.vjoy_interface.VJoyInterface`.
+        """
+        if UINPUT_AVAILABLE and UInputJoystickInterface is not None:
+            return UInputJoystickInterface(self._config)
+        return VJoyInterface(self._config)
+
+    def _retire_inactive_interface(self) -> None:
+        """On Linux, destroy whichever uinput device is not the active output.
+
+        Windows keeps both drivers attached (vJoy as a fallback for ViGEm),
+        which is harmless there. On Linux each back end is a separate virtual
+        gamepad that games can see, so only the active one is kept alive; the
+        other is re-created on demand by the factories above.
+        """
+        if not UINPUT_AVAILABLE:
+            return
+        if self._use_vigem and self._vjoy is not None:
+            try:
+                self._vjoy.shutdown()
+            except Exception:
+                pass
+            self._vjoy = None
+        elif not self._use_vigem and self._vigem is not None:
+            try:
+                self._vigem.shutdown()
+            except Exception:
+                pass
+            self._vigem = None
     
     def _is_controller_connected(self) -> bool:
         """Check if the active controller interface is connected."""
@@ -665,18 +731,35 @@ class ControllerBridge(QObject):
     def getControllerType(self) -> str:  # noqa: N802
         """Get the type of controller interface being used."""
         if self._use_vigem:
-            return "Xbox 360 (ViGEm)"
-        return "vJoy (DirectInput)"
+            return "Xbox 360 (uinput)" if UINPUT_AVAILABLE else "Xbox 360 (ViGEm)"
+        return "Joystick (uinput)" if UINPUT_AVAILABLE else "vJoy (DirectInput)"
 
     @Slot(result=str)
     def getOutputMode(self) -> str:  # noqa: N802
-        """Get current output mode: 'vigem' or 'vjoy'."""
+        """Get current output mode: 'vigem' or 'vjoy'.
+
+        The mode names are kept platform-neutral for profiles and QML: on
+        Linux ``'vigem'`` means the uinput Xbox 360 pad and ``'vjoy'`` the
+        uinput generic joystick.
+        """
         return "vigem" if self._use_vigem else "vjoy"
+
+    @Slot(str, result=str)
+    def getOutputModeLabel(self, mode: str) -> str:  # noqa: N802
+        """Human-readable menu label for an output mode on this platform.
+
+        Args:
+            mode: ``'vjoy'`` or ``'vigem'``.
+        """
+        mode = str(mode).lower().strip()
+        if UINPUT_AVAILABLE:
+            return "Xbox 360 gamepad (uinput)" if mode == "vigem" else "Generic joystick (uinput)"
+        return "ViGEm Xbox 360 (XInput)" if mode == "vigem" else "vJoy (DirectInput)"
 
     @Slot(result=bool)
     def isVigemAvailable(self) -> bool:  # noqa: N802
-        """Check if ViGEm (vgamepad) is available on this system."""
-        return VIGEM_AVAILABLE
+        """Check if Xbox 360 gamepad output (ViGEm on Windows, uinput on Linux) is available."""
+        return XBOX_OUTPUT_AVAILABLE
 
     @Slot(str)
     def setOutputMode(self, mode: str) -> None:  # noqa: N802
@@ -687,15 +770,16 @@ class ControllerBridge(QObject):
         want_vigem = mode == "vigem"
         if want_vigem == self._use_vigem:
             return
-        if want_vigem and not VIGEM_AVAILABLE:
-            print("Cannot switch to ViGEm — vgamepad not installed")
+        if want_vigem and not XBOX_OUTPUT_AVAILABLE:
+            print("Cannot switch to Xbox 360 output: vgamepad not installed")
             return
         # Initialize the target interface if needed
         if want_vigem and self._vigem is None:
-            self._vigem = ViGEmInterface(self._config)
+            self._vigem = self._create_xbox_interface()
         if not want_vigem and self._vjoy is None:
-            self._vjoy = VJoyInterface(self._config)
+            self._vjoy = self._create_joystick_interface()
         self._use_vigem = want_vigem
+        self._retire_inactive_interface()
         self._config.set("controller.prefer_vigem", want_vigem)
         self._config.save_config()
         self.outputModeChanged.emit(mode)
@@ -1504,7 +1588,7 @@ class ControllerBridge(QObject):
             try:
                 print("[bridge] Full Game Mode: profile doesn't use ViGEm, creating one for Game Mode...")
                 if self._vigem is None:
-                    self._vigem = ViGEmInterface(self._config)
+                    self._vigem = self._create_xbox_interface()
                 if self._vigem.is_connected and self._vigem.gamepad:
                     gamepad = self._vigem.gamepad
                     print("[bridge] Full Game Mode: on-demand ViGEm gamepad created!")
@@ -1605,6 +1689,8 @@ class ControllerBridge(QObject):
         import sys as _sys
         result = {
             "vigem_package": VIGEM_AVAILABLE,
+            "uinput": UINPUT_AVAILABLE,
+            "platform": _sys.platform,
             "vigem_gamepad": bool(self._vigem and self._vigem.gamepad),
             "vigem_connected": bool(self._vigem and self._vigem.is_connected),
             "mouse_hider": MOUSE_HIDER_AVAILABLE,

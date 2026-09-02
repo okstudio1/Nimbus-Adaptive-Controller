@@ -4,6 +4,7 @@
 
 ## Setup & Installation
 - [Installation Guide](setup/INSTALLATION.md) — installer, vJoy setup, prerequisites, troubleshooting
+- [Linux Setup](setup/LINUX.md) — running on Linux: uinput permissions, output modes, Steam/Proton, Wayland notes
 - [Profile System](setup/PROFILES.md) — profile storage, JSON structure, custom layout widget properties
 - [Packaging Guide](setup/PACKAGING.md) — **build & distribute** — PyInstaller, NSIS, code signing, release checklist
 

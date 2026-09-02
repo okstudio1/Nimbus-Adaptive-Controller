@@ -1,6 +1,7 @@
 # Linux Probe Plan
 
 **Status:** Proposed experiment. Nothing here is part of Nimbus; the scripts below are throwaway.
+**Update (2026-09):** The output half of the Linux story now ships: the app runs on Linux and emits through `uinput` (see [docs/setup/LINUX.md](../setup/LINUX.md) and `src/uinput_interface.py`). Probe 1's `EVIOCGRAB` input-side question is still open.
 **Parent doc:** [HOST_MODE_ISOLATION.md](HOST_MODE_ISOLATION.md)
 **Cost:** One weekend, $0, existing hardware.
 

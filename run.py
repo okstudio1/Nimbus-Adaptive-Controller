@@ -48,7 +48,12 @@ def check_dependencies():
         print("ERROR: Virtual environment Python not found")
         return False
     
-    required_packages = ['pyvjoy', 'numpy', 'PySide6']
+    if sys.platform == "win32":
+        required_packages = ['pyvjoy', 'numpy', 'PySide6']
+    else:
+        # vJoy/ViGEm are Windows drivers. Linux uses the kernel uinput module
+        # through src/uinput_interface.py, which needs no extra package.
+        required_packages = ['numpy', 'PySide6']
     
     # Check if packages are installed
     try:
@@ -131,10 +136,15 @@ def main():
         return 0
     except Exception as e:
         print(f"\nERROR: {e}")
-        print("\nIf this is a VJoy error, make sure:")
-        print("1. VJoy driver is installed")
-        print("2. VJoy device #1 is configured with 6+ axes")
-        print("3. VJoy device is enabled")
+        if sys.platform.startswith("linux"):
+            print("\nIf this is a uinput error, make sure:")
+            print("1. /dev/uinput exists (sudo modprobe uinput)")
+            print("2. Your user can write to it (see docs/setup/LINUX.md for the udev rule)")
+        else:
+            print("\nIf this is a VJoy error, make sure:")
+            print("1. VJoy driver is installed")
+            print("2. VJoy device #1 is configured with 6+ axes")
+            print("3. VJoy device is enabled")
         input("Press Enter to exit...")
         return 1
 

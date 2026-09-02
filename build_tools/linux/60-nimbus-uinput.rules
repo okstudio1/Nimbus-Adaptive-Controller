@@ -1,0 +1,11 @@
+# Nimbus Adaptive Controller: let the logged-in user create virtual controllers
+# through the kernel uinput module. Steam ships an equivalent rule
+# (60-steam-input.rules); install this one only if Steam is not installed.
+#
+#   sudo cp build_tools/linux/60-nimbus-uinput.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger --name-match=uinput
+#
+# "uaccess" grants an ACL to the active seat's user (systemd-logind). The
+# group/mode fallback covers systems without logind: add your user to the
+# "input" group (sudo usermod -aG input $USER) and log back in.
+KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", TAG+="uaccess", OPTIONS+="static_node=uinput"
