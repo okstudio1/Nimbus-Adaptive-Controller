@@ -44,8 +44,8 @@ from __future__ import annotations
 import sys
 from typing import Optional
 
-from PySide6.QtCore import QObject, Slot, Signal, Property, QTimer
-from PySide6.QtGui import QCursor, QWindow
+from PySide6.QtCore import QObject, Slot, Signal, Property, QTimer, Qt
+from PySide6.QtGui import QCursor, QWindow, QGuiApplication
 
 from .config import ControllerConfig
 from .vjoy_interface import VJoyInterface
@@ -102,6 +102,19 @@ try:
 except Exception:
     MOUSE_HIDER_AVAILABLE = False
     _mouse_hider = None
+
+# Driver-agnostic keep-alive pulse: controller mode without the Win32 hooks
+try:
+    from . import controller_pulse as _controller_pulse
+    CONTROLLER_PULSE_AVAILABLE = True
+except Exception:
+    CONTROLLER_PULSE_AVAILABLE = False
+    _controller_pulse = None
+
+# Windows routes controller mode through mouse_hider (pulse + mouse hook +
+# ClipCursor release + emergency hotkey); every other platform uses the
+# plain pulse against the active Xbox-style interface.
+_USE_MOUSE_HIDER = sys.platform == "win32"
 
 
 class ControllerBridge(QObject):
@@ -334,11 +347,50 @@ class ControllerBridge(QObject):
     # ----- No-focus mode property (prevents stealing focus from games) -----
     def _get_no_focus_mode(self) -> bool:
         return bool(self._no_focus_mode)
+
+    @staticmethod
+    def _x11_session() -> bool:
+        """True when Qt is running on the xcb (X11) platform plugin."""
+        try:
+            return QGuiApplication.platformName() == "xcb"
+        except Exception:
+            return False
+
+    def _apply_no_focus_flag(self, enabled: bool) -> bool:
+        """Toggle Qt's ``WindowDoesNotAcceptFocus`` on the main window.
+
+        On X11 a window with this flag still receives pointer input but never
+        takes keyboard focus, which is the Linux counterpart of the Windows
+        ``WS_EX_NOACTIVATE`` Game Focus Mode.
+
+        Returns:
+            True if the flag was applied.
+        """
+        if self._window is None:
+            return False
+        try:
+            self._window.setFlag(Qt.WindowDoesNotAcceptFocus, bool(enabled))
+            return True
+        except Exception as e:
+            print(f"No-focus flag failed: {e}")
+            return False
     
     def _set_no_focus_mode(self, enabled: bool) -> None:
         if self._no_focus_mode == enabled:
             return
         
+        if sys.platform != "win32":
+            if self._window is None:
+                print("No-focus mode: window not set yet")
+                return
+            if self._apply_no_focus_flag(enabled):
+                self._no_focus_mode = bool(enabled)
+                self._config.set("ui.no_focus_mode", self._no_focus_mode)
+                self._config.save_config()
+                self.noFocusModeChanged.emit(self._no_focus_mode)
+                print(f"No-focus mode {'ENABLED' if enabled else 'DISABLED'} (Qt WindowDoesNotAcceptFocus)")
+            return
+
         if not WINDOW_UTILS_AVAILABLE:
             print("No-focus mode: window_utils not available")
             return
@@ -378,8 +430,15 @@ class ControllerBridge(QObject):
     
     @Slot(result=bool)
     def isNoFocusModeAvailable(self) -> bool:  # noqa: N802
-        """Check if no-focus mode is available on this platform."""
-        return WINDOW_UTILS_AVAILABLE and sys.platform == "win32"
+        """Check if no-focus mode is available on this platform.
+
+        Windows uses ``WS_EX_NOACTIVATE`` (window_utils); X11 uses Qt's
+        ``WindowDoesNotAcceptFocus`` flag. Wayland compositors own focus
+        policy, so the mode is reported unavailable there.
+        """
+        if sys.platform == "win32":
+            return WINDOW_UTILS_AVAILABLE
+        return self._x11_session()
     
     @Slot()
     def clipCursorToWindow(self) -> None:  # noqa: N802
@@ -1432,8 +1491,32 @@ class ControllerBridge(QObject):
         
         Requires ViGEm (virtual Xbox controller) and mouse_hider module.
         """
-        return (MOUSE_HIDER_AVAILABLE and self._use_vigem and
+        backend_ok = MOUSE_HIDER_AVAILABLE if _USE_MOUSE_HIDER else CONTROLLER_PULSE_AVAILABLE
+        return (backend_ok and self._use_vigem and
                 self._vigem is not None and self._vigem.is_connected)
+
+    def _start_pulse_only(self, pulse_hz: int) -> bool:
+        """Start controller mode through the driver-agnostic pulse (non-Windows)."""
+        if not CONTROLLER_PULSE_AVAILABLE or not _controller_pulse:
+            print("[bridge] controller_pulse module not available")
+            return False
+
+        def _on_change(active: bool):
+            self._controller_mode_active = active
+            self.controllerModeChanged.emit(active)
+
+        return _controller_pulse.start_controller_mode(
+            self._vigem, pulse_hz=max(5, min(120, int(pulse_hz))), callback=_on_change)
+
+    def _stop_pulse_only(self) -> None:
+        """Stop the driver-agnostic pulse and report the state change."""
+        if CONTROLLER_PULSE_AVAILABLE and _controller_pulse:
+            try:
+                _controller_pulse.stop_controller_mode()
+            except Exception as e:
+                print(f"[bridge] stop pulse failed: {e}")
+        self._controller_mode_active = False
+        self.controllerModeChanged.emit(False)
 
     @Slot(int, int, result=bool)
     def startControllerMode(self, game_hwnd: int, pulse_hz: int = 30) -> bool:  # noqa: N802
@@ -1453,11 +1536,13 @@ class ControllerBridge(QObject):
         Returns:
             True if started successfully.
         """
+        if not self._use_vigem or not self._vigem or not self._vigem.gamepad:
+            print("[bridge] Xbox output not active: controller mode requires Xbox emulation")
+            return False
+        if not _USE_MOUSE_HIDER:
+            return self._start_pulse_only(pulse_hz)
         if not MOUSE_HIDER_AVAILABLE or not _mouse_hider:
             print("[bridge] mouse_hider module not available")
-            return False
-        if not self._use_vigem or not self._vigem or not self._vigem.gamepad:
-            print("[bridge] ViGEm not available — controller mode requires Xbox emulation")
             return False
         
         try:
@@ -1487,6 +1572,9 @@ class ControllerBridge(QObject):
     @Slot()
     def stopControllerMode(self) -> None:  # noqa: N802
         """Stop Controller Mode Enforcement."""
+        if not _USE_MOUSE_HIDER:
+            self._stop_pulse_only()
+            return
         if not MOUSE_HIDER_AVAILABLE or not _mouse_hider:
             return
         try:
@@ -1499,6 +1587,9 @@ class ControllerBridge(QObject):
     @Slot(result=bool)
     def isControllerModeActive(self) -> bool:  # noqa: N802
         """Check if controller mode enforcement is currently running."""
+        if not _USE_MOUSE_HIDER:
+            return bool(CONTROLLER_PULSE_AVAILABLE and _controller_pulse
+                        and _controller_pulse.is_controller_mode_active())
         if not MOUSE_HIDER_AVAILABLE or not _mouse_hider:
             return False
         return _mouse_hider.is_controller_mode_active()
@@ -1510,10 +1601,14 @@ class ControllerBridge(QObject):
         Forces the game into controller mode without enabling the
         continuous keep-alive. Useful as a quick fix or test.
         """
-        if not MOUSE_HIDER_AVAILABLE or not _mouse_hider:
-            return
         if not self._use_vigem or not self._vigem or not self._vigem.gamepad:
-            print("[bridge] ViGEm not available for controller burst")
+            print("[bridge] Xbox output not active for controller burst")
+            return
+        if not _USE_MOUSE_HIDER:
+            if CONTROLLER_PULSE_AVAILABLE and _controller_pulse:
+                _controller_pulse.send_controller_burst(self._vigem)
+            return
+        if not MOUSE_HIDER_AVAILABLE or not _mouse_hider:
             return
         try:
             _mouse_hider.send_controller_burst(self._vigem.gamepad)
@@ -1524,6 +1619,10 @@ class ControllerBridge(QObject):
     def getControllerModeStats(self) -> str:  # noqa: N802
         """Get controller mode statistics as JSON string."""
         import json
+        if not _USE_MOUSE_HIDER:
+            if CONTROLLER_PULSE_AVAILABLE and _controller_pulse:
+                return json.dumps(_controller_pulse.get_controller_mode_stats())
+            return "{}"
         if not MOUSE_HIDER_AVAILABLE or not _mouse_hider:
             return "{}"
         try:
@@ -1554,6 +1653,11 @@ class ControllerBridge(QObject):
         
         # Step 0: Enable Game Focus Mode so clicking Nimbus doesn't steal focus
         # NOTE: This is session-only — NOT saved to config, so it resets on restart.
+        if sys.platform != "win32" and self._window and not self._no_focus_mode:
+            if self._x11_session() and self._apply_no_focus_flag(True):
+                self._no_focus_mode = True
+                self.noFocusModeChanged.emit(True)
+                print("[bridge] Full Game Mode: no-focus flag enabled (session-only)")
         if WINDOW_UTILS_AVAILABLE and self._window and not self._no_focus_mode:
             try:
                 hwnd = get_qt_window_handle(self._window)
@@ -1564,8 +1668,8 @@ class ControllerBridge(QObject):
             except Exception as e:
                 print(f"[bridge] Full Game Mode: focus mode failed ({e}), continuing...")
         
-        # Step 1: ClipCursor release (fights mouse confinement)
-        if BORDERLESS_AVAILABLE:
+        # Step 1: ClipCursor release (fights mouse confinement) - Win32 only
+        if BORDERLESS_AVAILABLE and sys.platform == "win32":
             try:
                 def _on_release_change(active: bool):
                     self._cursor_release_active = active
@@ -1583,8 +1687,8 @@ class ControllerBridge(QObject):
         if self._vigem and self._vigem.gamepad:
             gamepad = self._vigem.gamepad
             print("[bridge] Full Game Mode: using existing ViGEm gamepad")
-        elif VIGEM_AVAILABLE:
-            # Create a ViGEm gamepad on demand for Game Mode
+        elif XBOX_OUTPUT_AVAILABLE:
+            # Create an Xbox gamepad on demand for Game Mode
             try:
                 print("[bridge] Full Game Mode: profile doesn't use ViGEm, creating one for Game Mode...")
                 if self._vigem is None:
@@ -1603,7 +1707,11 @@ class ControllerBridge(QObject):
             print("[bridge]   -> Controller mode enforcement requires ViGEm")
             print("[bridge]   -> Install: pip install vgamepad")
         
-        if MOUSE_HIDER_AVAILABLE and gamepad:
+        if not _USE_MOUSE_HIDER and gamepad:
+            if self._start_pulse_only(pulse_hz):
+                success = True
+                print("[bridge] Full Game Mode: controller pulse STARTED")
+        elif MOUSE_HIDER_AVAILABLE and gamepad:
             try:
                 nimbus_hwnd = int(self._window.winId()) if self._window else 0
                 def _on_ctrl_change(active: bool):
@@ -1642,6 +1750,8 @@ class ControllerBridge(QObject):
         and restores the game window.
         """
         # Stop controller mode
+        if not _USE_MOUSE_HIDER:
+            self._stop_pulse_only()
         if MOUSE_HIDER_AVAILABLE and _mouse_hider:
             try:
                 _mouse_hider.stop_controller_mode()
@@ -1670,8 +1780,8 @@ class ControllerBridge(QObject):
             except Exception:
                 pass
         
-        # Disable game focus mode — restore normal window activation
-        if WINDOW_UTILS_AVAILABLE and self._window:
+        # Disable game focus mode — restore normal window activation (Win32 path)
+        if WINDOW_UTILS_AVAILABLE and self._window and sys.platform == "win32":
             try:
                 hwnd = get_qt_window_handle(self._window)
                 remove_window_no_activate(hwnd)
@@ -1681,6 +1791,14 @@ class ControllerBridge(QObject):
             except Exception:
                 pass
         
+        if sys.platform != "win32" and self._no_focus_mode and self._window:
+            if self._apply_no_focus_flag(False):
+                self._no_focus_mode = False
+                self.noFocusModeChanged.emit(False)
+                print("[bridge] Full Game Mode: no-focus flag disabled")
+        # Linux: drop an on-demand Xbox device when the profile's output is the joystick
+        self._retire_inactive_interface()
+
         print("[bridge] Full Game Mode stopped")
 
     @Slot(result="QVariantMap")

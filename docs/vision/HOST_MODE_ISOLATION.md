@@ -114,8 +114,8 @@ L1 dominates, and L2 is close to pointless on inspection: the games that would f
 | `borderless.py`: ClipCursor polling, borderless conversion | Delete. gamescope and Wayland handle confinement and fullscreen. |
 | `window_utils.py`: `WS_EX_NOACTIVATE` focus juggling | Largely delete. Wayland clients cannot steal focus the way Win32 windows can. |
 | `mouse_hider.py` | Delete. |
-| `vjoy_interface.py` (pyvjoy, requires vJoy driver) | `uinput` virtual device. Kernel module already present on every distro. |
-| `vigem_interface.py` (vgamepad, requires ViGEmBus) | **vgamepad already ships a Linux backend** built on evdev/uinput, same Python API. |
+| `vjoy_interface.py` (pyvjoy, requires vJoy driver) | **Shipped (2026-09):** `UInputJoystickInterface` in `src/uinput_interface.py`, a pure-Python `uinput` device with 8 axes and 56 buttons. |
+| `vigem_interface.py` (vgamepad, requires ViGEmBus) | **Shipped (2026-09):** `UInputXboxInterface`, a `uinput` Xbox 360 pad with the xpad VID/PID. (vgamepad 0.1.0 does have an experimental Linux backend, but it needs libevdev; Nimbus does not use it.) |
 | **Option F: signed kernel filter driver, EV cert, bricking risk** | **`InputDevice.grab()`. One line.** |
 
 That last row is the finding. The single highest-effort item on the Windows roadmap, a kernel-mode mouse class filter driver with a $300 to $600/yr code-signing certificate, is a standard library call on Linux.
@@ -125,7 +125,7 @@ The port is also smaller than it looks. PySide6, QML, `bridge.py`, `config.py`, 
 ### Real friction, honestly
 
 1. **Wayland's isolation cuts both ways.** The same strict client separation that kills the input leak also blocks an always-on-top overlay from positioning itself. `Qt.WindowStaysOnTopHint` does not work on KWin Wayland, and `move()`/`setGeometry()` are not honored. You need `layer-shell-qt` or KWindowSystem, and behavior varies by compositor (GNOME/Mutter notably does not implement layer-shell). For an app whose entire form factor is a floating panel beside a game, this is the main porting tax and it is not trivial.
-2. **vgamepad's Linux backend is marked experimental.** Buttons and axes work with the same API; rumble and LEDs are Windows-only and not yet ported.
+2. **No rumble or LEDs.** Nimbus's own uinput back end covers sticks, triggers, D-pad, and buttons; force feedback is not implemented (it is not on Windows either).
 3. **Anti-cheat is opt-in, not solved.** EAC has supported Proton since 2021, but each developer must enable it. Enabled: **Elden Ring**, Halo MCC, Dead by Daylight, THE FINALS, Squad. Declined: Fortnite, Apex Legends. Vanguard (Valorant, League) is a hard no on Linux. So the competitive-shooter tier stays closed, just for a commercial reason rather than a technical one.
 4. **Market fit.** Windows is where the users are, and "accessibility user running Arch" is a small intersection. This is the genuine strategic cost, and it is larger than any of the technical ones.
 
@@ -142,6 +142,20 @@ Compare that to the Windows VM path in Option C or D: two GPUs, IOMMU-clean moth
 ### The distribution angle
 
 If Nimbus runs on Linux, it runs on a Steam Deck, and on Bazzite or ChimeraOS handhelds. For an accessibility-first project, "a preconfigured console you plug into your TV, with the adaptive control surface built in" is a stronger product story than anything achievable on Windows, and it inherits Steam Input on top of Nimbus's own layer.
+
+### Measured, 2026-09-02
+
+The output half of L1 is no longer a plan. Nimbus runs on Linux (`docs/setup/LINUX.md`) and the following were measured on an Ubuntu 24.04 X11 desktop with Steam installed:
+
+| Claim in this section | Result |
+|---|---|
+| A uinput pad is seen as a standard gamepad | **Confirmed.** SDL reports `Xbox 360 Controller`, `SDL_IsGameController() == true`, with its built-in X360 mapping; every stick, trigger, D-pad direction, and button lands on the expected SDL control. Steam's `controller.txt` logged the pad and loaded its `configset_controller_xbox360.vdf` the moment the app started. Proton uses the same SDL path. |
+| `window_utils.py` can "largely" be deleted | **Confirmed for X11.** A Qt window with `Qt.WindowDoesNotAcceptFocus` keeps receiving pointer events while the previously active window keeps keyboard focus, which is Game Focus Mode in one flag. The bridge now uses it off Windows. Wayland is untested; compositors decide focus there. |
+| `EVIOCGRAB` isolates the mouse from everything else | **Not yet measured.** Reading a mouse-class evdev node needs the `input` group (or root); the development box did not have it. The probe is written (a virtual uinput mouse is grabbed, so the real mouse is never touched) and runs as soon as `usermod -aG input` has been applied. |
+| Wayland form-factor tax (Probe 2) | **Not measured** (X11 host; a nested GNOME Wayland shell would not start). Note that the main window does not use always-on-top or absolute positioning today, so only "does the UI render" is really at stake. |
+| Controller-mode enforcement is Windows-only | **No longer.** The keep-alive pulse is driver-agnostic (`src/controller_pulse.py`) and drives the uinput pad; only the Win32 mouse hook and ClipCursor release stay Windows-specific. |
+
+Two nuances worth keeping in mind for L1. Under Wine/Proton, `ClipCursor` becomes an X pointer grab, so without `EVIOCGRAB` the confinement problem looks the same as on Windows and the controller-mode trick is the counter-measure. And the F4 consequence in the probe plan still holds: once the physical mouse is grabbed, Nimbus's own window stops receiving it and must read evdev deltas itself.
 
 ## 6. Assessment
 

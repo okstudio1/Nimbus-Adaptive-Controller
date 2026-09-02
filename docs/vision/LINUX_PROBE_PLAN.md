@@ -57,7 +57,7 @@ This mirrors the existing `Ctrl+Alt+F12` emergency stop in Full Game Mode, and t
 
 ### Probe script
 
-Use **vgamepad** first, not raw uinput. It is the library [vigem_interface.py](../../src/vigem_interface.py) already depends on, so this tests the real Nimbus code path on Linux rather than a parallel implementation. Fall back to raw `evdev.UInput` only if vgamepad's experimental Linux backend misbehaves.
+Use `src.uinput_interface.UInputXboxInterface` for the pad: it is the real Nimbus code path on Linux now, needs no extra package, and SDL/Steam already recognise it (see Results below). The vgamepad script below is the original plan and still works if `libevdev` is installed.
 
 ```python
 """Throwaway probe. Not Nimbus code. Grabs the mouse, emits right-stick motion."""
@@ -153,9 +153,25 @@ P8 is the one to think hard about. A solution that only works on KDE means shipp
 
 Whatever the outcome, record it back into [HOST_MODE_ISOLATION.md](HOST_MODE_ISOLATION.md) section 5, since that section currently rests on reasoning rather than measurement.
 
+## Results so far (2026-09-02)
+
+Measured on an Ubuntu 24.04 X11 desktop with Steam installed, using the shipped uinput back end rather than vgamepad.
+
+| Criterion | Status | Evidence |
+|---|---|---|
+| **P1** mouse drives the camera via the right stick | Untested | Needs Probe 1's game session |
+| **P2** game's own mouse-look does not respond | **Blocked** | Grabbing a mouse-class evdev node needs the `input` group; `sudo usermod -aG input $USER` then log back in. A safe probe exists that grabs a *virtual* uinput mouse and checks the desktop pointer stops moving, so the real mouse is never touched. |
+| **P3** pad detected as a standard Xbox controller | **PASS** | SDL: `Xbox 360 Controller`, `SDL_IsGameController() == true`, built-in mapping, all controls verified. Steam Input logged the pad and loaded `configset_controller_xbox360.vdf` on app start. **F2 is ruled out.** |
+| **P4** EAC accepts the session | Untested | Needs Elden Ring under Proton |
+| **P5** UI renders on Wayland | Untested | X11 host; nested `gnome-shell --wayland` exited immediately. The Qt Wayland plugin ships in the venv. |
+| **P6/P7** kept above a game / positioned deliberately | Deferred | The main window does not use always-on-top or absolute positioning today, so these are design questions, not regressions. |
+| **P8** works on more than one compositor | Untested | |
+
+Additional finding relevant to F4 and to `window_utils.py`: on X11, a Qt window with `Qt.WindowDoesNotAcceptFocus` still receives clicks and motion while keyboard focus stays with the previously active window. That is the Game Focus Mode equivalent, and the bridge now uses it off Windows. The controller-mode keep-alive pulse also runs on Linux (`src/controller_pulse.py`), so a game with dual input detection can be pushed into gamepad prompts without any grab at all.
+
 ## Explicitly out of scope
 
-- Porting Nimbus. No `src/` changes should result from these probes.
+- Porting the UI or the input intake. The output layer (uinput back ends) shipped separately in 2026-09; these probes still should not drive further `src/` changes until Probe 1 has an answer.
 - Profile schema, telemetry, or packaging concerns.
 - Performance tuning, latency measurement, or curve/deadzone feel.
 - Any game other than Elden Ring. One decisive case beats five ambiguous ones.

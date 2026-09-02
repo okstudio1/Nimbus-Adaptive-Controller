@@ -193,6 +193,13 @@ Linux back ends over the kernel `uinput` module (pure Python: `ioctl` + `struct`
 - The bridge chooses them through `_create_xbox_interface()` / `_create_joystick_interface()` when `UINPUT_AVAILABLE`; `XBOX_OUTPUT_AVAILABLE = VIGEM_AVAILABLE or UINPUT_AVAILABLE` drives the "vigem" mode availability. Only the active device is kept alive on Linux (`_retire_inactive_interface()`).
 - Setup, permissions, and verification: [docs/setup/LINUX.md](../setup/LINUX.md)
 
+### `controller_pulse` (`src/controller_pulse.py`)
+
+Driver-agnostic controller-mode keep-alive, the core of Full Game Mode without the Win32 pieces:
+- `start_controller_mode(interface, pulse_hz, callback)` runs a burst (10 alternating 0.5 deflections + A press) then a 30 Hz 0.08-amplitude left-stick circle, saving and restoring the user's real stick values every tick.
+- Works against any interface exposing `set_left_stick` / `set_button` / `current_values` (ViGEm or uinput Xbox). The bridge uses it when `sys.platform != "win32"`; Windows keeps `mouse_hider.py`, which bundles the same pulse with the mouse hook, ClipCursor release, and the emergency hotkey.
+- On X11 the bridge pairs it with `Qt.WindowDoesNotAcceptFocus` on the main window (`_apply_no_focus_flag`) so clicking Nimbus never takes keyboard focus from the game.
+
 ### `ControllerBridge` (`src/bridge.py`)
 
 Qt `QObject` exposed to QML as `controller`:

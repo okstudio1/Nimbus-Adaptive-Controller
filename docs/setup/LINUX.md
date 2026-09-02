@@ -102,20 +102,41 @@ Details that differ from Windows:
 - Profiles are portable between Windows and Linux without changes; the
   `vigem`/`vjoy` mode names are kept as platform-neutral identifiers.
 
+## Game Mode and focus on Linux
+
+- **Game Focus Mode** (View menu) works on X11. It sets Qt's
+  `WindowDoesNotAcceptFocus` flag on the Nimbus window, so clicking or
+  dragging on Nimbus never takes keyboard focus away from the game while
+  pointer input still reaches Nimbus. Under Wayland the compositor decides
+  focus, so the item is disabled there.
+- **Game Mode** (the ▶ button in the status bar) runs controller-mode
+  enforcement: an initial burst of stick deflections plus an A press, then a
+  30 Hz sub-deadzone left-stick oscillation that keeps a game with dual input
+  detection in gamepad mode (Xbox prompts, no mouse chasing). Your real stick
+  values are restored every tick. On X11 it also turns on Game Focus Mode for
+  the session. Click the button again to stop. There is no `Ctrl+Alt+F12`
+  emergency hotkey on Linux; the button and quitting the app are the stop
+  paths, and both re-centre the stick.
+- If the current profile outputs to the generic joystick, Game Mode creates
+  the Xbox pad on demand and removes it again when you stop.
+
 ## What is Windows-only
 
-These menu items are disabled on Linux because they rely on Win32 APIs
-(`ClipCursor`, `WS_EX_NOACTIVATE`, low-level mouse hooks):
-
-- Game Focus Mode
-- Borderless Gaming and cursor release
-- Full Game Mode / controller mode enforcement
-
-On Linux, Wayland's client isolation and `gamescope` cover most of the same
-ground. The longer-term evdev design (grabbing the physical mouse with
-`EVIOCGRAB`) is discussed in
+Borderless window conversion, ClipCursor release polling, and the low-level
+mouse hook rely on Win32 APIs and are not available. Under Wine/Proton a
+game's `ClipCursor` becomes an X pointer grab, so a game that confines the
+pointer while in mouse mode behaves as it does on Windows; controller mode
+is the counter-measure. The design that removes the physical mouse from the
+game entirely (an `EVIOCGRAB` exclusive grab) is discussed in
 [docs/vision/HOST_MODE_ISOLATION.md](../vision/HOST_MODE_ISOLATION.md) and
-[docs/vision/LINUX_PROBE_PLAN.md](../vision/LINUX_PROBE_PLAN.md).
+[docs/vision/LINUX_PROBE_PLAN.md](../vision/LINUX_PROBE_PLAN.md). A safe
+probe for it lives in `tests/probe_evdev_grab.py`; it grabs a virtual mouse
+rather than yours and needs your user in the `input` group:
+
+```bash
+sudo usermod -aG input $USER    # then log out and back in
+./venv/bin/python tests/probe_evdev_grab.py
+```
 
 ## Steam and Proton
 
@@ -133,6 +154,8 @@ are compositor-controlled there and may not apply:
 
 - "Always on top" is not honoured by every compositor.
 - Programmatic window positioning is ignored by most compositors.
+- Game Focus Mode is disabled: a Wayland client cannot opt out of keyboard
+  focus on its own. Game Mode still runs the controller pulse.
 
 If you need the panel to float over a fullscreen game, an X11 session or
 running the game under `gamescope` is the reliable path today. Set
@@ -148,4 +171,6 @@ session misbehaves.
 | Qt prints `Could not load the Qt platform plugin "xcb"` | Install the xcb libraries listed under [Requirements](#requirements) |
 | Device shows up but the game ignores it | Try the other output mode; some engines only scan for gamepads (Xbox mode) or only for joysticks (generic mode) |
 | Two Nimbus controllers listed | An older app instance is still running; close it |
+| Game Focus Mode is greyed out | You are on Wayland; use an X11 session or run the game under `gamescope` |
+| Game shows keyboard prompts again after a while | Some games drop controller mode on any mouse click; keep Game Mode running and avoid clicking inside the game window |
 | Cursor moves the game camera as well as the on-screen stick | Expected today; see the host-mode research doc for the evdev grab plan |

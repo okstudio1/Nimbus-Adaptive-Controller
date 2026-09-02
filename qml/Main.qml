@@ -1296,6 +1296,15 @@ ApplicationWindow {
                             root.gameModeHwnd = 0
                             root.gameModeTitle = ""
                             gamePickerPopup.visible = false
+                        } else if (!controller.isBorderlessAvailable()) {
+                            // No window picker on this platform (Linux):
+                            // Game Mode = no-focus window + controller keep-alive pulse.
+                            var okNoPicker = controller.startFullGameMode(0, 30)
+                            if (okNoPicker) {
+                                root.gameModeHwnd = 0
+                                root.gameModeTitle = "Controller Mode"
+                                root.gameModeActive = true
+                            }
                         } else {
                             root._refreshGameWindows()
                             gamePickerPopup.visible = !gamePickerPopup.visible

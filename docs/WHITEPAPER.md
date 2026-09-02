@@ -9,7 +9,7 @@ Owen Kent · May 2026
 
 ## Abstract
 
-The Nimbus Adaptive Controller is a free, open-source software platform that synthesises virtual joystick output from arbitrary pointer-class input devices on Windows. It targets a class of users for whom commercially available game controllers are physically inaccessible, and it does so without dedicated hardware: any mouse, trackball, head tracker, eye tracker, or alternative HID device that produces 2-D pointer events can be re-shaped, through a fully user-configurable layout, into DirectInput (vJoy) or XInput (ViGEm) controller output consumable by any Windows game or simulation. This paper describes the system architecture, the input-processing pipeline, the modular layout engine, the persistence model, and the design decisions behind treating the user interface itself — rather than the physical input device — as the primary point of customisation. We argue that this inversion is the principal contribution of the project: by making the *layout* programmable and the *input device* fixed, Nimbus delivers an accessibility surface comparable in flexibility to the Xbox Adaptive Controller at zero hardware cost, and provides a foundation on which voice control, AI-assisted execution, AAC, and adaptive-hardware bridging can be layered as software extensions of the same control surface.
+The Nimbus Adaptive Controller is a free, open-source software platform that synthesises virtual joystick output from arbitrary pointer-class input devices on Windows and Linux. It targets a class of users for whom commercially available game controllers are physically inaccessible, and it does so without dedicated hardware: any mouse, trackball, head tracker, eye tracker, or alternative HID device that produces 2-D pointer events can be re-shaped, through a fully user-configurable layout, into DirectInput (vJoy) or XInput (ViGEm) controller output consumable by any Windows game or simulation. This paper describes the system architecture, the input-processing pipeline, the modular layout engine, the persistence model, and the design decisions behind treating the user interface itself — rather than the physical input device — as the primary point of customisation. We argue that this inversion is the principal contribution of the project: by making the *layout* programmable and the *input device* fixed, Nimbus delivers an accessibility surface comparable in flexibility to the Xbox Adaptive Controller at zero hardware cost, and provides a foundation on which voice control, AI-assisted execution, AAC, and adaptive-hardware bridging can be layered as software extensions of the same control surface.
 
 ---
 
@@ -35,7 +35,7 @@ This paper documents how that pipeline is constructed, what design choices it em
 
 ### 2.2 Non-Goals
 
-- **Cross-platform parity.** Linux and macOS lack a mature equivalent of vJoy/ViGEm at the kernel level. Nimbus is Windows-first by necessity.
+- **macOS.** Windows (vJoy, ViGEm) and Linux (kernel `uinput`, § 6.3) are supported runtimes. macOS has no comparable kernel facility for virtual HID devices and is not supported.
 - **Replacement of physical adaptive hardware.** Users who already own a QuadStick or sip-and-puff device should continue to use it; Nimbus aims to *wrap* such devices, not displace them.
 - **A general-purpose macro engine.** Nimbus emits HID-class output by design. Keyboard-output mode is on the roadmap (§ 12) but is downstream of the core controller pipeline.
 
@@ -43,7 +43,7 @@ This paper documents how that pipeline is constructed, what design choices it em
 
 ## 3. System Overview
 
-Nimbus is a Python 3.8+ application built on PySide6 (Qt 6) with a Qt Quick (QML) presentation layer and a small Python core. It links to one of two virtual-driver bindings — `pyvjoy` for vJoy and `vgamepad` for ViGEm — and exposes its runtime to QML through a single bridge object.
+Nimbus is a Python 3.8+ application built on PySide6 (Qt 6) with a Qt Quick (QML) presentation layer and a small Python core. On Windows it links to one of two virtual-driver bindings — `pyvjoy` for vJoy and `vgamepad` for ViGEm; on Linux it drives the kernel `uinput` module directly through `ioctl` with no compiled dependency — and exposes its runtime to QML through a single bridge object.
 
 ```
    ┌──────────────────────────────────────────────────────────────┐
@@ -189,7 +189,7 @@ Layouts are persisted on every meaningful state change — widget move, widget r
 
 ## 6. Output Backends
 
-Nimbus supports two virtual controller drivers. The choice is per-profile and is auto-selected from the profile's declared `layout_type`. Profiles of type `xbox`, `adaptive`, or `custom` route through ViGEm — these are layouts a user is most likely to point at modern XInput-only titles — while `flight_sim` profiles route through vJoy, since flight and ground-control software depends on the larger DirectInput axis and button budget. The user can override the auto-selection at any time from the status ribbon, and `controller.prefer_vigem` in the config is consulted as a tiebreaker; vJoy is also used as a fallback when the `vgamepad` package or the ViGEmBus driver is absent.
+Nimbus supports two virtual controller drivers. The choice is per-profile and is auto-selected from the profile's declared `layout_type`. Profiles of type `xbox`, `adaptive`, or `custom` route through ViGEm — these are layouts a user is most likely to point at modern XInput-only titles — while `flight_sim` profiles route through vJoy, since flight and ground-control software depends on the larger DirectInput axis and button budget. The user can override the auto-selection at any time from the status ribbon, and `controller.prefer_vigem` in the config is consulted as a tiebreaker; vJoy is also used as a fallback when the `vgamepad` package or the ViGEmBus driver is absent. On Linux the same two modes are backed by `uinput` devices (§ 6.3); the mode names `vjoy` and `vigem` are kept as platform-neutral identifiers so profiles move between operating systems unchanged.
 
 ### 6.1 vJoy (DirectInput)
 
@@ -201,9 +201,13 @@ The weakness of vJoy is age and platform drift. Many modern Windows games — an
 
 ViGEmBus provides an in-kernel virtual Xbox 360 controller. Games receive an XInput device indistinguishable from a wired Xbox 360 pad. This solves the modern-games-don't-see-vJoy problem at the cost of a much smaller resource budget: 2 analog sticks, 2 triggers, and 14 buttons.
 
-### 6.3 Backend Indirection
+### 6.3 uinput (Linux)
 
-The bridge owns a single controller-interface object whose concrete type is `VJoyInterface` or `ViGEmInterface`. Both expose the same surface — `update_axis(name, value)`, `set_button(id, pressed)`, `center_all()`, `get_status()` — so the QML layer is unaware of which backend is active. Switching backend at runtime is a matter of profile reload.
+Linux ships the `uinput` kernel module, which lets a process with write access to `/dev/uinput` create a virtual input device that SDL, Steam, Proton, and native games treat as hardware. `src/uinput_interface.py` provides two such devices, chosen by the same rule as above: `UInputXboxInterface` is an Xbox 360 pad carrying the vendor/product IDs the kernel `xpad` driver reports, so SDL and Steam Input apply their built-in mapping without configuration (verified: `SDL_IsGameController()` is true and every control maps correctly); `UInputJoystickInterface` is a generic 8-axis joystick with 56 buttons, the evdev limit for generic joystick codes. Only the active device is kept alive so games never see two Nimbus controllers. Access to `/dev/uinput` is granted by a one-line udev rule (Steam installs an equivalent one).
+
+### 6.4 Backend Indirection
+
+The bridge owns a single controller-interface object whose concrete type is `VJoyInterface` or `ViGEmInterface` on Windows and `UInputJoystickInterface` or `UInputXboxInterface` on Linux. Both expose the same surface — `update_axis(name, value)`, `set_button(id, pressed)`, `center_all()`, `get_status()` — so the QML layer is unaware of which backend is active. Switching backend at runtime is a matter of profile reload.
 
 ---
 
@@ -215,7 +219,7 @@ Profiles are versioned, JSON-serialised configurations stored under the platform
 |----------|------|
 | Windows  | `%APPDATA%\ProjectNimbus\profiles\` |
 | macOS    | `~/Library/Application Support/ProjectNimbus/profiles/` *(path resolver only; macOS is not a supported runtime — see § 2.2)* |
-| Linux    | `~/.local/share/ProjectNimbus/profiles/` *(path resolver only; Linux is not a supported runtime — see § 2.2)* |
+| Linux    | `~/.local/share/ProjectNimbus/profiles/` (or `$XDG_DATA_HOME/ProjectNimbus/profiles/`) |
 
 A profile carries every piece of information needed to reproduce the user's controller end-to-end: layout type, custom layout (if applicable), per-axis sensitivity and deadzone, button toggle states, axis mapping, and metadata (display name, description). On first run, the bundled `adaptive_platform_2.json` is copied into the user data directory; thereafter the user may duplicate, rename, modify, and delete profiles freely. There is no central server, no account requirement, and no upload; profile sharing is a matter of copying a JSON file.
 
@@ -304,7 +308,7 @@ The platform is positioned to extend in four directions, each preserving the sam
 
 Nimbus is distributed in three forms:
 
-- **Source.** `python run.py` bootstraps a virtual environment, installs dependencies (PySide6, pyvjoy, vgamepad, numpy, keyring, httpx, sentry-sdk), and launches the QML app. All Win32 integration uses the standard-library `ctypes` module — there is no `pywin32` dependency, by design.
+- **Source.** `python run.py` (Windows) or `./run.sh` (Linux) bootstraps a virtual environment, installs dependencies (PySide6, numpy, keyring, httpx, sentry-sdk, plus pyvjoy and vgamepad on Windows only), and launches the QML app. All Win32 integration uses the standard-library `ctypes` module — there is no `pywin32` dependency, by design.
 - **Portable executable.** A single-file PyInstaller build with all assets and dependencies bundled.
 - **Installer.** An NSIS installer that detects existing vJoy and ViGEmBus installations (via 64-bit registry views), creates Start Menu shortcuts, and launches the application post-install at the user's privilege level rather than the installer's elevated level.
 
@@ -331,6 +335,8 @@ The roadmap directions — voice, AI-assisted execution, AAC, hardware bridging,
 | Buttons | Up to 128 | 10 face/shoulder/stick buttons + 4-way D-pad (commonly counted as 14) |
 | POV hats | Yes | D-pad (4 directions) |
 | Game compatibility | Older / simulator / pro flight & ground-control | Modern PC games / Steam |
+
+On Linux the `uinput` back ends expose the same shapes, with two differences: the generic joystick has 56 buttons rather than 128 and no POV hat, and the Xbox pad reports its D-pad as a hat axis pair exactly as a wired Xbox 360 controller does.
 
 ## Appendix B. Profile JSON — Minimal Custom Layout
 
