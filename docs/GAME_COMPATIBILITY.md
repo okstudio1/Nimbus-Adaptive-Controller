@@ -104,7 +104,7 @@ Some features work, with limitations.
 
 | Game | Input Method | Notes |
 |---|---|---|
-| **Elden Ring** | ClipCursor + Raw Input | Use controller mode (ViGEm) — mouse camera won't work. Set to windowed in settings. |
+| **Elden Ring** | ClipCursor + Raw Input | Use controller mode (ViGEm) — mouse camera won't work. Set to windowed in settings. **On Linux: fully compatible.** Mouse Isolation makes the raw-input camera blind to the mouse, the Nimbus pad drives it, and EAC accepted the session (verified 2026-09-03). |
 | **Dark Souls III** | ClipCursor + Raw Input | Similar to Elden Ring — use controller mode. Set to windowed in settings first. |
 
 ## Incompatible Games

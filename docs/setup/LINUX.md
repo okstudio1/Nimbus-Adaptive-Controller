@@ -163,6 +163,10 @@ Verified in a real game: with Carrier Command 2 running under Proton, its
 mouse-look camera stopped reacting to a grabbed mouse completely while still
 reacting to the same mouse before and after the grab, and the game showed
 Steam's "Controller Connected: Xbox 360 Controller" toast for the Nimbus pad.
+Also verified with Elden Ring under Easy Anti-Cheat: the game went online,
+showed Xbox prompts for the Nimbus pad, the pad's right stick turned the
+camera, and the raw-input mouse-look stopped reacting entirely while the
+mouse was isolated. EAC raised no objection to any of it.
 
 ## What is Windows-only
 
