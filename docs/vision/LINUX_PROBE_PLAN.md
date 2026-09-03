@@ -1,7 +1,6 @@
 # Linux Probe Plan
 
-**Status:** Proposed experiment. Nothing here is part of Nimbus; the scripts below are throwaway.
-**Update (2026-09):** The output half of the Linux story now ships: the app runs on Linux and emits through `uinput` (see [docs/setup/LINUX.md](../setup/LINUX.md) and `src/uinput_interface.py`). Probe 1's `EVIOCGRAB` input-side question is still open.
+**Status:** Probe 1 complete, all four criteria pass (Elden Ring under EAC, 2026-09-03; see [Results so far](#results-so-far-2026-09-02)). Probe 2 (Wayland) is still open. The output layer and Mouse Isolation shipped in Nimbus meanwhile ([docs/setup/LINUX.md](../setup/LINUX.md)), so the throwaway scripts below are superseded by `tests/probe_evdev_grab.py` and `tests/probe_game_mouselook.py`, which reproduce the measurements.
 **Parent doc:** [HOST_MODE_ISOLATION.md](HOST_MODE_ISOLATION.md)
 **Cost:** One weekend, $0, existing hardware.
 
@@ -153,7 +152,9 @@ P8 is the one to think hard about. A solution that only works on KDE means shipp
 | Pass | Fail | The input model works but the form factor does not. Consider a different UI shape on Linux (gamescope overlay, separate device, or Steam Input integration) rather than porting the panel as-is. |
 | Fail | Either | The core premise is wrong and the whole Linux argument in the parent doc collapses. Fall back to the Windows options: cloud gaming, two-PC streaming, or the filter driver. |
 
-Whatever the outcome, record it back into [HOST_MODE_ISOLATION.md](HOST_MODE_ISOLATION.md) section 5, since that section currently rests on reasoning rather than measurement.
+Whatever the outcome, record it back into [HOST_MODE_ISOLATION.md](HOST_MODE_ISOLATION.md) section 5 (done: see its "Measured" subsection).
+
+**Outcome (2026-09-03):** Probe 1 = **Pass**. Probe 2 = not yet run (X11 host). Per the table, the input model is real and is now shipped; what remains is the Wayland form-factor question, which X11 users sidestep because the no-focus flag and Mouse Isolation both work there today.
 
 ## Results so far (2026-09-02)
 

@@ -191,7 +191,7 @@ docs/
 
 | Directory | Purpose |
 |-----------|---------|
-| `tests/` | Driver diagnostics: `test_vjoy.py` (Windows), `test_uinput.py` (Linux round-trip), `probe_evdev_grab.py` (Linux EVIOCGRAB probe) |
+| `tests/` | Driver diagnostics: `test_vjoy.py` (Windows), `test_uinput.py` (Linux round-trip), `probe_evdev_grab.py` (Linux EVIOCGRAB probe), `probe_game_mouselook.py` (in-game isolation check) |
 | `research/` | Research notes, reference materials |
 | `build/` | PyInstaller build cache (gitignored) |
 | `dist/` | Built executables and installers (gitignored) |

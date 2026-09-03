@@ -111,6 +111,8 @@ Some features work, with limitations.
 
 These games use Raw Input exclusively. External cursor release has no effect. Use a second monitor, tablet input device, or game streaming instead.
 
+**On Linux**, Mouse Isolation removes the mouse from the equation entirely, so what decides a title in this tier there is only its anti-cheat under Proton: EAC titles that enable Proton support work (Elden Ring verified), while Vanguard titles do not run on Linux at all.
+
 > **Why this tier can't be fixed in user mode:** `WH_MOUSE_LL` is a Win32 message-level hook, but Raw Input is delivered from the HID stack and never passes through it. Closing this gap requires either isolating the game from the physical mouse or filtering the mouse below `win32k`. See [Host Mode & Input Isolation](vision/HOST_MODE_ISOLATION.md) for research on both.
 
 | Game | Why |

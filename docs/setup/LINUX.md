@@ -72,6 +72,7 @@ bar, and prints the fix in the terminal. Nothing else is affected.
 ```bash
 ./venv/bin/python tests/test_uinput.py            # creates both devices, checks every axis/button
 ./venv/bin/python tests/test_uinput.py --hold 60  # keep them alive so you can inspect them
+./venv/bin/python tests/probe_game_mouselook.py --window "ELDEN RING"   # with a game running: is it blind to an isolated mouse?
 ```
 
 While a device is held (or the app is running) you can see it with
