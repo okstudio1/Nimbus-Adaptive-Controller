@@ -181,6 +181,7 @@ class ControllerBridge(QObject):
         outputModeChanged(str): Output device switched (``'vjoy'`` or
             ``'vigem'``).
         recentProfilesChanged(): Recent-profiles list updated.
+        alwaysOnTopChanged(bool): Always-on-Top window pinning toggled.
     """
 
     scaleFactorChanged = Signal(float)
@@ -198,6 +199,7 @@ class ControllerBridge(QObject):
     outputModeChanged = Signal(str)  # Emits "vjoy" or "vigem" when output device changes
     recentProfilesChanged = Signal()  # Emits when the recently-used profile list changes
     mouseIsolationChanged = Signal(bool)  # Emits when the physical-mouse grab starts/stops (Linux)
+    alwaysOnTopChanged = Signal(bool)  # Emits when the window is pinned above other windows
     isolationCursorMoved = Signal(float, float)  # Software cursor position while isolated (window coords)
 
     def __init__(self, config: ControllerConfig, parent: Optional[QObject] = None) -> None:
@@ -216,6 +218,10 @@ class ControllerBridge(QObject):
         self._config = config
         self._window: Optional[QWindow] = None
         self._no_focus_mode = False
+        self._always_on_top = False
+        # Set while Full Game Mode pins the window itself, so stopping it
+        # only unpins a window the user had not pinned deliberately.
+        self._always_on_top_by_game_mode = False
         self._cursor_release_active = False
         self._borderless_game_hwnd: int = 0
         self._controller_mode_active = False
@@ -402,7 +408,10 @@ class ControllerBridge(QObject):
 
         On X11 a window with this flag still receives pointer input but never
         takes keyboard focus, which is the Linux counterpart of the Windows
-        ``WS_EX_NOACTIVATE`` Game Focus Mode.
+        ``WS_EX_NOACTIVATE`` Game Focus Mode. As in
+        :meth:`_apply_always_on_top`, the geometry is restored afterwards
+        because changing a flag can make the xcb plugin recreate the native
+        window.
 
         Returns:
             True if the flag was applied.
@@ -410,7 +419,13 @@ class ControllerBridge(QObject):
         if self._window is None:
             return False
         try:
+            geom = self._window.geometry()
+            was_visible = self._window.isVisible()
             self._window.setFlag(Qt.WindowDoesNotAcceptFocus, bool(enabled))
+            if self._window.geometry() != geom:
+                self._window.setGeometry(geom)
+            if was_visible and not self._window.isVisible():
+                self._window.show()
             return True
         except Exception as e:
             print(f"No-focus flag failed: {e}")
@@ -460,7 +475,106 @@ class ControllerBridge(QObject):
                 print("No-focus mode DISABLED - normal window behavior restored")
     
     noFocusMode = Property(bool, _get_no_focus_mode, _set_no_focus_mode, notify=noFocusModeChanged)
-    
+
+    # ------------------------------------------------------------------
+    # Always on Top
+    # ------------------------------------------------------------------
+
+    def _apply_always_on_top(self, enabled: bool) -> bool:
+        """Pin or unpin the main window above other windows.
+
+        Qt's ``WindowStaysOnTopHint`` maps to ``WS_EX_TOPMOST`` on Windows and
+        to ``_NET_WM_STATE_ABOVE`` on X11, which is what keeps the panel
+        visible over a fullscreen game. Changing a flag can make the xcb
+        plugin recreate the native window, so the geometry is captured first
+        and restored afterwards and the window is re-shown and raised.
+
+        Args:
+            enabled: True to pin the window above others.
+
+        Returns:
+            True if the flag was applied.
+        """
+        if self._window is None:
+            return False
+        try:
+            geom = self._window.geometry()
+            was_visible = self._window.isVisible()
+            self._window.setFlag(Qt.WindowStaysOnTopHint, bool(enabled))
+            # A recreated native window can come back at the wrong place or
+            # hidden; put it back exactly where the user had it.
+            if self._window.geometry() != geom:
+                self._window.setGeometry(geom)
+            if was_visible and not self._window.isVisible():
+                self._window.show()
+            if enabled and was_visible:
+                self._window.raise_()
+            return True
+        except Exception as e:
+            print(f"Always-on-top flag failed: {e}")
+            return False
+
+    def _get_always_on_top(self) -> bool:
+        return bool(self._always_on_top)
+
+    def _set_always_on_top(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if self._always_on_top == enabled:
+            return
+        if self._window is None:
+            print("Always on Top: window not set yet")
+            return
+        if not self._apply_always_on_top(enabled):
+            return
+        self._always_on_top = enabled
+        # An explicit toggle is the user's choice, so Game Mode must not undo it.
+        self._always_on_top_by_game_mode = False
+        self._config.set("ui.always_on_top", enabled)
+        self._config.save_config()
+        self.alwaysOnTopChanged.emit(enabled)
+        print(f"Always on Top {'ENABLED' if enabled else 'DISABLED'}")
+
+    alwaysOnTop = Property(bool, _get_always_on_top, _set_always_on_top, notify=alwaysOnTopChanged)
+
+    @Slot(result=bool)
+    def isAlwaysOnTopAvailable(self) -> bool:  # noqa: N802
+        """Check whether the window can be pinned above others on this platform.
+
+        Windows and X11 both honour ``WindowStaysOnTopHint``. Wayland has no
+        client-settable "above" state in xdg-shell, so the compositor decides
+        and the toggle is reported unavailable there.
+        """
+        if sys.platform == "win32":
+            return True
+        return self._x11_session()
+
+    def _game_mode_pin_window(self) -> None:
+        """Pin the window above the game for the duration of Full Game Mode.
+
+        A fullscreen game covers the panel otherwise, which on Linux also
+        hides the software cursor and the Game Mode button used to stop.
+        Session-only: not written to config, so it resets on restart.
+        """
+        if self._always_on_top or self._window is None:
+            return
+        if not self.isAlwaysOnTopAvailable():
+            return
+        if self._apply_always_on_top(True):
+            self._always_on_top = True
+            self._always_on_top_by_game_mode = True
+            self.alwaysOnTopChanged.emit(True)
+            print("[bridge] Full Game Mode: window pinned above the game (session-only)")
+
+    def _game_mode_unpin_window(self) -> None:
+        """Undo :meth:`_game_mode_pin_window`, leaving a user-set pin alone."""
+        if not self._always_on_top_by_game_mode or self._window is None:
+            return
+        if self._apply_always_on_top(False):
+            self._always_on_top = False
+            self._always_on_top_by_game_mode = False
+            self.alwaysOnTopChanged.emit(False)
+            print("[bridge] Full Game Mode: window unpinned")
+
     @Slot(QWindow)
     def setWindow(self, window: QWindow) -> None:  # noqa: N802
         """Set the window reference for no-focus mode. Called from QML after window is ready."""
@@ -468,6 +582,11 @@ class ControllerBridge(QObject):
         # Only restore no-focus mode if user explicitly enabled it (not from game mode auto-enable)
         if self._config.get("ui.no_focus_mode_user", False):
             self._set_no_focus_mode(True)
+        # Always on Top is a plain user preference, so restore it as saved.
+        if self._config.get("ui.always_on_top", False) and self.isAlwaysOnTopAvailable():
+            if self._apply_always_on_top(True):
+                self._always_on_top = True
+                self.alwaysOnTopChanged.emit(True)
     
     @Slot(result=bool)
     def isNoFocusModeAvailable(self) -> bool:  # noqa: N802
@@ -1715,6 +1834,11 @@ class ControllerBridge(QObject):
                     print("[bridge] Full Game Mode: Game Focus Mode auto-enabled (session-only)")
             except Exception as e:
                 print(f"[bridge] Full Game Mode: focus mode failed ({e}), continuing...")
+
+        # Step 0b: Pin above the game. A fullscreen game hides the panel
+        # otherwise, and on Linux that also hides the software cursor and the
+        # button used to stop.
+        self._game_mode_pin_window()
         
         # Step 1: ClipCursor release (fights mouse confinement) - Win32 only
         if BORDERLESS_AVAILABLE and sys.platform == "win32":
@@ -1854,6 +1978,9 @@ class ControllerBridge(QObject):
                 self._no_focus_mode = False
                 self.noFocusModeChanged.emit(False)
                 print("[bridge] Full Game Mode: no-focus flag disabled")
+
+        # Drop the session-only pin, unless the user had turned it on themselves
+        self._game_mode_unpin_window()
         # Linux: drop an on-demand Xbox device when the profile's output is the joystick
         self._retire_inactive_interface()
 

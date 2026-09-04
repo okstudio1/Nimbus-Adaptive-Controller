@@ -1,6 +1,6 @@
 # Linux Probe Plan
 
-**Status:** Probe 1 complete, all four criteria pass (Elden Ring under EAC, 2026-09-03; see [Results so far](#results-so-far-2026-09-02)). Probe 2 (Wayland) is still open. The output layer and Mouse Isolation shipped in Nimbus meanwhile ([docs/setup/LINUX.md](../setup/LINUX.md)), so the throwaway scripts below are superseded by `tests/probe_evdev_grab.py` and `tests/probe_game_mouselook.py`, which reproduce the measurements.
+**Status:** Probe 1 complete, all four criteria pass (Elden Ring under EAC, 2026-09-03; see [Results so far](#results-so-far-2026-09-02)). Probe 2 (Wayland) is still open, but its P6 "kept above a fullscreen game" criterion now passes on X11. The output layer and Mouse Isolation shipped in Nimbus meanwhile ([docs/setup/LINUX.md](../setup/LINUX.md)), so the throwaway scripts below are superseded by `tests/probe_evdev_grab.py`, `tests/probe_game_mouselook.py`, and `tests/probe_always_on_top.py`, which reproduce the measurements.
 **Parent doc:** [HOST_MODE_ISOLATION.md](HOST_MODE_ISOLATION.md)
 **Cost:** One weekend, $0, existing hardware.
 
@@ -154,7 +154,7 @@ P8 is the one to think hard about. A solution that only works on KDE means shipp
 
 Whatever the outcome, record it back into [HOST_MODE_ISOLATION.md](HOST_MODE_ISOLATION.md) section 5 (done: see its "Measured" subsection).
 
-**Outcome (2026-09-03):** Probe 1 = **Pass**. Probe 2 = not yet run (X11 host). Per the table, the input model is real and is now shipped; what remains is the Wayland form-factor question, which X11 users sidestep because the no-focus flag and Mouse Isolation both work there today.
+**Outcome (2026-09-03):** Probe 1 = **Pass**. Probe 2 = not yet run (X11 host), though P6 now has an X11 answer: **Pass**, via the Always on Top toggle. Per the table, the input model is real and is now shipped; what remains is the Wayland form-factor question, which X11 users sidestep because the no-focus flag, always-on-top, and Mouse Isolation all work there today.
 
 ## Results so far (2026-09-02)
 
@@ -167,7 +167,8 @@ Measured on an Ubuntu 24.04 X11 desktop with Steam installed, using the shipped 
 | **P3** pad detected as a standard Xbox controller | **PASS, including in-game and under EAC** | SDL: `Xbox 360 Controller`, `SDL_IsGameController() == true`, built-in mapping, all controls verified. Steam Input logged the pad and loaded `configset_controller_xbox360.vdf` on app start. In Carrier Command 2 (Proton) the Steam overlay showed "Controller Connected: Xbox 360 Controller" and the pad's A button advanced the title screen. Elden Ring showed Xbox glyphs throughout (D-pad/A/B prompts, R3 lock-on hints) and every menu step was driven by the pad. **F2 is ruled out.** |
 | **P4** EAC accepts the session | **PASS** (Elden Ring 1.17, Proton Experimental, 2026-09-03) | Launched through `start_protected_game.exe` with `EasyAntiCheat_EOS.exe` running; the main menu reported ONLINE and retrieved server data; the uinput pad, a uinput mouse, and an active `EVIOCGRAB` were all present during the session with no EAC dialog, kick, or error. **F3 is ruled out.** |
 | **P5** UI renders on Wayland | Untested | X11 host; nested `gnome-shell --wayland` exited immediately. The Qt Wayland plugin ships in the venv. |
-| **P6/P7** kept above a game / positioned deliberately | Deferred | The main window does not use always-on-top or absolute positioning today, so these are design questions, not regressions. |
+| **P6** kept above a fullscreen game | **PASS on X11** (GNOME Shell / Mutter, 2026-09-03) | Nimbus gained **View > Always on Top** (`Qt.WindowStaysOnTopHint`, i.e. `_NET_WM_STATE_ABOVE`), which Full Game Mode also turns on for the session. Measured with `tests/probe_always_on_top.py`: pinned, 100% of the panel's pixels survived a fullscreen window taking focus and the panel stayed above it in `_NET_CLIENT_LIST_STACKING`; unpinned, 0% survived. Confirmed against the real app window as well. Untested on Wayland, where the toggle is disabled. |
+| **P7** positioned deliberately | Deferred | The main window is dragged by hand and does not set an absolute position, so this is still a design question, not a regression. |
 | **P8** works on more than one compositor | Untested | |
 
 **Elden Ring (v1.17, EAC, Proton Experimental, 2026-09-03).** The decisive case from this plan. The game launched under EAC and went ONLINE with the Nimbus uinput pad present; the pad advanced the title, dismissed the notices, chose Continue, and rotated the camera in the world. In the Stranded Graveyard a virtual mouse sweep rotated the camera when ungrabbed and did nothing while Nimbus held `EVIOCGRAB` (66 changed samples against a 69 noise floor). No anti-cheat reaction at any point. All four pass criteria hold; the only caveat is that the pad and mouse were virtual test devices rather than a person's hands, which does not change what the game and EAC observed.

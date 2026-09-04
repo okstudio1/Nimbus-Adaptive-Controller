@@ -106,6 +106,9 @@ ApplicationWindow {
         function onMouseIsolationChanged(active) {
             mouseIsolationItem.checked = active
         }
+        function onAlwaysOnTopChanged(enabled) {
+            alwaysOnTopItem.checked = enabled
+        }
         function onControllerModeChanged(active) {
             root.gameModeActive = active
         }
@@ -641,6 +644,19 @@ ApplicationWindow {
                 }
             }
             MenuItem {
+                id: alwaysOnTopItem
+                text: qsTr("Always on Top")
+                checkable: true
+                checked: controller ? controller.alwaysOnTop : false
+                enabled: controller ? controller.isAlwaysOnTopAvailable() : false
+                onTriggered: {
+                    viewMenu.close()
+                    Qt.callLater(function(){
+                        if (controller) controller.alwaysOnTop = alwaysOnTopItem.checked
+                    })
+                }
+            }
+            MenuItem {
                 id: mouseIsolationItem
                 text: qsTr("Isolate Mouse (grab physical mouse)")
                 checkable: true
@@ -850,6 +866,9 @@ ApplicationWindow {
 
                 Label { text: "6. Borderless Gaming"; color: "#ff8833"; font.pixelSize: 13; font.bold: true }
                 Label { text: "Go to View → Borderless Gaming to free your cursor from games that lock it.\n\n• Auto-detects running games from our compatibility database\n• Converts windowed games to borderless fullscreen\n• Continuously releases cursor lock so you can reach Nimbus\n• Works with most indie, strategy, and older games\n• See the Compatibility tab for a full list of tested games"; color: "#ccc"; font.pixelSize: 12; wrapMode: Text.WordWrap; width: parent.width }
+
+                Label { text: "7. Always on Top"; color: "#ff8833"; font.pixelSize: 13; font.bold: true }
+                Label { text: "Enable via View → Always on Top to pin the window above everything else, which is what keeps the controls reachable while a fullscreen game is running. Game Mode turns it on for you and off again when you stop, unless you had already pinned it yourself."; color: "#ccc"; font.pixelSize: 12; wrapMode: Text.WordWrap; width: parent.width }
             }
         }
 

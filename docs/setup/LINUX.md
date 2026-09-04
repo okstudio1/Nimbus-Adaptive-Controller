@@ -73,6 +73,7 @@ bar, and prints the fix in the terminal. Nothing else is affected.
 ./venv/bin/python tests/test_uinput.py            # creates both devices, checks every axis/button
 ./venv/bin/python tests/test_uinput.py --hold 60  # keep them alive so you can inspect them
 ./venv/bin/python tests/probe_game_mouselook.py --window "ELDEN RING"   # with a game running: is it blind to an isolated mouse?
+./venv/bin/python tests/probe_always_on_top.py    # does this desktop keep a pinned panel over a fullscreen window?
 ```
 
 While a device is held (or the app is running) you can see it with
@@ -105,6 +106,15 @@ Details that differ from Windows:
 
 ## Game Mode and focus on Linux
 
+- **Always on Top** (View menu) pins the Nimbus window above everything
+  else, which is what makes it usable next to a **fullscreen** game: without
+  it the game covers the panel, and on Linux that also hides the Mouse
+  Isolation software cursor and the Game Mode button you need in order to
+  stop. It sets Qt's `WindowStaysOnTopHint`, which is `_NET_WM_STATE_ABOVE`
+  on X11. The setting is remembered between runs. Measured on GNOME Shell
+  (Mutter) 48 / X11: a pinned panel stayed 100% visible while a fullscreen
+  window held focus, and was completely covered without the pin
+  (`tests/probe_always_on_top.py`).
 - **Game Focus Mode** (View menu) works on X11. It sets Qt's
   `WindowDoesNotAcceptFocus` flag on the Nimbus window, so clicking or
   dragging on Nimbus never takes keyboard focus away from the game while
@@ -114,8 +124,10 @@ Details that differ from Windows:
   enforcement: an initial burst of stick deflections plus an A press, then a
   30 Hz sub-deadzone left-stick oscillation that keeps a game with dual input
   detection in gamepad mode (Xbox prompts, no mouse chasing). Your real stick
-  values are restored every tick. On X11 it also turns on Game Focus Mode for
-  the session, and by default it turns on **Mouse Isolation** (next section)
+  values are restored every tick. On X11 it also pins the window on top and
+  turns on Game Focus Mode for the session (both are dropped again when you
+  stop, unless you had turned them on yourself), and by default it turns on
+  **Mouse Isolation** (next section)
   so the game cannot see the physical mouse at all. Click the button again to stop. There is no `Ctrl+Alt+F12`
   emergency hotkey on Linux; the button and quitting the app are the stop
   paths, and both re-centre the stick.
@@ -194,7 +206,9 @@ listed.
 The UI renders and works on Wayland (KDE, GNOME, Sway). Two window behaviours
 are compositor-controlled there and may not apply:
 
-- "Always on top" is not honoured by every compositor.
+- "Always on top" is not honoured by every compositor: xdg-shell has no
+  client-settable "above" state, so View > Always on Top is disabled on
+  Wayland the same way Game Focus Mode is.
 - Programmatic window positioning is ignored by most compositors.
 - Game Focus Mode is disabled: a Wayland client cannot opt out of keyboard
   focus on its own. Game Mode still runs the controller pulse.
@@ -214,6 +228,8 @@ session misbehaves.
 | Device shows up but the game ignores it | Try the other output mode; some engines only scan for gamepads (Xbox mode) or only for joysticks (generic mode) |
 | Two Nimbus controllers listed | An older app instance is still running; close it |
 | Game Focus Mode is greyed out | You are on Wayland; use an X11 session or run the game under `gamescope` |
+| A fullscreen game hides the Nimbus window | Tick **View > Always on Top** (Game Mode does it for you). If it is greyed out you are on Wayland; use an X11 session |
+| Always on Top is ticked but the game still covers Nimbus | Your window manager does not honour `_NET_WM_STATE_ABOVE` over fullscreen windows; run `tests/probe_always_on_top.py` to confirm, and run the game borderless-windowed or under `gamescope` instead |
 | Isolate Mouse fails with "no read access to /dev/input/event*" | Add your user to the `input` group (`sudo usermod -aG input $USER`) and log back in |
 | Keyboard dead while isolated | The pass-through keyboard could not be created; check `/dev/uinput` access. Press `Ctrl+Alt+F12` or quit Nimbus to release |
 | Game shows keyboard prompts again after a while | Some games drop controller mode on any mouse click; keep Game Mode running and avoid clicking inside the game window |
