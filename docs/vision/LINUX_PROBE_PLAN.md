@@ -1,6 +1,6 @@
 # Linux Probe Plan
 
-**Status:** Proposed experiment. Nothing here is part of Nimbus; the scripts below are throwaway.
+**Status:** Probe 1 complete, all four criteria pass (Elden Ring under EAC, 2026-09-03; see [Results so far](#results-so-far-2026-09-02)). Probe 2 (Wayland) is still open, but its P6 "kept above a fullscreen game" criterion now passes on X11. The output layer and Mouse Isolation shipped in Nimbus meanwhile ([docs/setup/LINUX.md](../setup/LINUX.md)), so the throwaway scripts below are superseded by `tests/probe_evdev_grab.py`, `tests/probe_game_mouselook.py`, and `tests/probe_always_on_top.py`, which reproduce the measurements.
 **Parent doc:** [HOST_MODE_ISOLATION.md](HOST_MODE_ISOLATION.md)
 **Cost:** One weekend, $0, existing hardware.
 
@@ -56,7 +56,7 @@ This mirrors the existing `Ctrl+Alt+F12` emergency stop in Full Game Mode, and t
 
 ### Probe script
 
-Use **vgamepad** first, not raw uinput. It is the library [vigem_interface.py](../../src/vigem_interface.py) already depends on, so this tests the real Nimbus code path on Linux rather than a parallel implementation. Fall back to raw `evdev.UInput` only if vgamepad's experimental Linux backend misbehaves.
+Use `src.uinput_interface.UInputXboxInterface` for the pad: it is the real Nimbus code path on Linux now, needs no extra package, and SDL/Steam already recognise it (see Results below). The vgamepad script below is the original plan and still works if `libevdev` is installed.
 
 ```python
 """Throwaway probe. Not Nimbus code. Grabs the mouse, emits right-stick motion."""
@@ -115,6 +115,8 @@ F4 is worth calling out in advance because it is certain to happen and it change
 
 The consequence: Nimbus would read raw deltas from evdev directly and drive its own on-screen cursor and stick position internally, rather than relying on Qt's mouse handling. That is arguably cleaner, since it is what the virtual stick conceptually wants anyway, but it is a real change to how [bridge.py](../../src/bridge.py) receives input and it should be scoped, not discovered late.
 
+**Done (2026-09):** `src/mouse_isolation.py` grabs the pointer devices and the bridge keeps a software cursor, delivering synthetic `QMouseEvent`s to the QML window. Verified end to end: a grabbed virtual device steered the software cursor onto the Game Mode button and clicked it while the desktop pointer stayed still.
+
 ---
 
 ## Probe 2: Can the Nimbus UI live on Wayland?
@@ -150,11 +152,34 @@ P8 is the one to think hard about. A solution that only works on KDE means shipp
 | Pass | Fail | The input model works but the form factor does not. Consider a different UI shape on Linux (gamescope overlay, separate device, or Steam Input integration) rather than porting the panel as-is. |
 | Fail | Either | The core premise is wrong and the whole Linux argument in the parent doc collapses. Fall back to the Windows options: cloud gaming, two-PC streaming, or the filter driver. |
 
-Whatever the outcome, record it back into [HOST_MODE_ISOLATION.md](HOST_MODE_ISOLATION.md) section 5, since that section currently rests on reasoning rather than measurement.
+Whatever the outcome, record it back into [HOST_MODE_ISOLATION.md](HOST_MODE_ISOLATION.md) section 5 (done: see its "Measured" subsection).
+
+**Outcome (2026-09-03):** Probe 1 = **Pass**. Probe 2 = not yet run (X11 host), though P6 now has an X11 answer: **Pass**, via the Always on Top toggle. Per the table, the input model is real and is now shipped; what remains is the Wayland form-factor question, which X11 users sidestep because the no-focus flag, always-on-top, and Mouse Isolation all work there today.
+
+## Results so far (2026-09-02)
+
+Measured on an Ubuntu 24.04 X11 desktop with Steam installed, using the shipped uinput back end rather than vgamepad.
+
+| Criterion | Status | Evidence |
+|---|---|---|
+| **P1** mouse drives the camera via the right stick | **PASS** (Elden Ring, 2026-09-03) | A 0.6 s right-stick deflection on the Nimbus uinput pad rotated the in-game camera (16,928 changed frame samples against a noise floor of 136) |
+| **P2** game's own mouse-look does not respond | **PASS in Elden Ring** (EAC, Proton, 2026-09-03) and in Carrier Command 2 (2026-09-02) | Elden Ring in the Stranded Graveyard: a 400 px virtual-mouse sweep rotated the camera (1,012 changed samples, noise floor 69); the same sweep with Nimbus holding the grab changed 66, i.e. nothing; after release 1,027. Elden Ring reads the mouse through Raw Input, the exact path that is unfixable on Windows. | `tests/probe_evdev_grab.py`: with `EVIOCGRAB` held on a mouse's evdev node, synthesised motion left the X11 desktop pointer exactly where it was while the grabbing process received every `REL_X/REL_Y` event; on release the pointer moved again. The real Logitech mouse node could also be grabbed and released. Needs the `input` group (`sudo usermod -aG input $USER`). What remains is only the in-game check that Proton/Wine sees nothing either, which follows from the X server seeing nothing. |
+| **P3** pad detected as a standard Xbox controller | **PASS, including in-game and under EAC** | SDL: `Xbox 360 Controller`, `SDL_IsGameController() == true`, built-in mapping, all controls verified. Steam Input logged the pad and loaded `configset_controller_xbox360.vdf` on app start. In Carrier Command 2 (Proton) the Steam overlay showed "Controller Connected: Xbox 360 Controller" and the pad's A button advanced the title screen. Elden Ring showed Xbox glyphs throughout (D-pad/A/B prompts, R3 lock-on hints) and every menu step was driven by the pad. **F2 is ruled out.** |
+| **P4** EAC accepts the session | **PASS** (Elden Ring 1.17, Proton Experimental, 2026-09-03) | Launched through `start_protected_game.exe` with `EasyAntiCheat_EOS.exe` running; the main menu reported ONLINE and retrieved server data; the uinput pad, a uinput mouse, and an active `EVIOCGRAB` were all present during the session with no EAC dialog, kick, or error. **F3 is ruled out.** |
+| **P5** UI renders on Wayland | Untested | X11 host; nested `gnome-shell --wayland` exited immediately. The Qt Wayland plugin ships in the venv. |
+| **P6** kept above a fullscreen game | **PASS on X11** (GNOME Shell / Mutter, 2026-09-03) | Nimbus gained **View > Always on Top** (`Qt.WindowStaysOnTopHint`, i.e. `_NET_WM_STATE_ABOVE`), which Full Game Mode also turns on for the session. Measured with `tests/probe_always_on_top.py`: pinned, 100% of the panel's pixels survived a fullscreen window taking focus and the panel stayed above it in `_NET_CLIENT_LIST_STACKING`; unpinned, 0% survived. Confirmed against the real app window as well. Untested on Wayland, where the toggle is disabled. |
+| **P7** positioned deliberately | Deferred | The main window is dragged by hand and does not set an absolute position, so this is still a design question, not a regression. |
+| **P8** works on more than one compositor | Untested | |
+
+**Elden Ring (v1.17, EAC, Proton Experimental, 2026-09-03).** The decisive case from this plan. The game launched under EAC and went ONLINE with the Nimbus uinput pad present; the pad advanced the title, dismissed the notices, chose Continue, and rotated the camera in the world. In the Stranded Graveyard a virtual mouse sweep rotated the camera when ungrabbed and did nothing while Nimbus held `EVIOCGRAB` (66 changed samples against a 69 noise floor). No anti-cheat reaction at any point. All four pass criteria hold; the only caveat is that the pad and mouse were virtual test devices rather than a person's hands, which does not change what the game and EAC observed.
+
+**In-game measurement (Carrier Command 2 v1.5.18, Windows build under Proton, 2026-09-02).** The game's cockpit free-look was used as the detector: a virtual uinput mouse swept 400 px and whole-window frames were compared (6 px sampling, threshold 60/765). No input: 0 changed samples. Ungrabbed sweep: 23,845 (the camera rotated). The same sweep with Nimbus holding `EVIOCGRAB` on that device: **1** changed sample, and the X pointer never moved. After release: 21,552. The game confined and re-centred the pointer the whole time (mouse-look), and the grab still made it blind. This is P2 answered against Proton, not just against the X server.
+
+Additional finding relevant to F4 and to `window_utils.py`: on X11, a Qt window with `Qt.WindowDoesNotAcceptFocus` still receives clicks and motion while keyboard focus stays with the previously active window. That is the Game Focus Mode equivalent, and the bridge now uses it off Windows. The controller-mode keep-alive pulse also runs on Linux (`src/controller_pulse.py`), so a game with dual input detection can be pushed into gamepad prompts without any grab at all.
 
 ## Explicitly out of scope
 
-- Porting Nimbus. No `src/` changes should result from these probes.
+- Porting the UI or the input intake. The output layer (uinput back ends) shipped separately in 2026-09; these probes still should not drive further `src/` changes until Probe 1 has an answer.
 - Profile schema, telemetry, or packaging concerns.
 - Performance tuning, latency measurement, or curve/deadzone feel.
 - Any game other than Elden Ring. One decisive case beats five ambiguous ones.

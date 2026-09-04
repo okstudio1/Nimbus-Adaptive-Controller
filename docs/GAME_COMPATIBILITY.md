@@ -37,6 +37,8 @@ Games capture the mouse using one of three mechanisms:
 - **Raw Input: OFF** in the game's mouse/video settings — `WH_MOUSE_LL` intercepts `WM_MOUSEMOVE` but cannot intercept `WM_INPUT` (raw device events)
 - Game must be in **windowed or borderless** mode (not exclusive fullscreen)
 
+**On Linux** no driver is needed: the Xbox pad is a kernel `uinput` device, and the same Game Mode button runs controller-mode enforcement, an X11 Game Focus Mode equivalent, and **Mouse Isolation**, an exclusive `EVIOCGRAB` of the physical mouse. With the mouse isolated, the Raw Input mechanism behind the Incompatible tier below has nothing to read; anti-cheat support under Proton is the remaining per-game question. Verified with **Carrier Command 2** (Proton): the cockpit free-look stopped responding to a grabbed mouse entirely (1 changed frame sample versus 23,845 ungrabbed), and the game recognised the uinput pad as an Xbox 360 controller. Borderless conversion and cursor release are Windows-only. See [Linux Setup](setup/LINUX.md).
+
 ### Emergency stop
 Press **Ctrl+Alt+F12** at any time to instantly kill Controller Mode and restore normal mouse behavior. This hotkey works even if Nimbus doesn't have focus.
 
@@ -102,12 +104,14 @@ Some features work, with limitations.
 
 | Game | Input Method | Notes |
 |---|---|---|
-| **Elden Ring** | ClipCursor + Raw Input | Use controller mode (ViGEm) — mouse camera won't work. Set to windowed in settings. |
+| **Elden Ring** | ClipCursor + Raw Input | Use controller mode (ViGEm) — mouse camera won't work. Set to windowed in settings. **On Linux: fully compatible.** Mouse Isolation makes the raw-input camera blind to the mouse, the Nimbus pad drives it, and EAC accepted the session (verified 2026-09-03). |
 | **Dark Souls III** | ClipCursor + Raw Input | Similar to Elden Ring — use controller mode. Set to windowed in settings first. |
 
 ## Incompatible Games
 
 These games use Raw Input exclusively. External cursor release has no effect. Use a second monitor, tablet input device, or game streaming instead.
+
+**On Linux**, Mouse Isolation removes the mouse from the equation entirely, so what decides a title in this tier there is only its anti-cheat under Proton: EAC titles that enable Proton support work (Elden Ring verified), while Vanguard titles do not run on Linux at all.
 
 > **Why this tier can't be fixed in user mode:** `WH_MOUSE_LL` is a Win32 message-level hook, but Raw Input is delivered from the HID stack and never passes through it. Closing this gap requires either isolating the game from the physical mouse or filtering the mouse below `win32k`. See [Host Mode & Input Isolation](vision/HOST_MODE_ISOLATION.md) for research on both.
 

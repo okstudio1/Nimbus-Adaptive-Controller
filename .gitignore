@@ -68,3 +68,6 @@ research/
 TODO.md
 build_tools/CODE_SIGNING.md
 docs/development/LLM_NOTES.md
+
+# ---- Probe frame captures ----
+tests/probe_frames/

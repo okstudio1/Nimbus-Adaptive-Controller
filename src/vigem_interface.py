@@ -4,6 +4,7 @@ This provides XInput-compatible virtual controllers that work with modern games
 like No Man's Sky that don't support DirectInput (vJoy).
 """
 
+import sys
 import time
 import threading
 from typing import Optional, Dict, Any
@@ -13,11 +14,13 @@ try:
     import vgamepad as vg
     VIGEM_AVAILABLE = True
     print("[OK] vgamepad imported successfully - Xbox 360 controller emulation available")
-except ImportError as e:
+except Exception as e:
+    # ImportError when missing; other errors if the ViGEmClient DLL cannot load.
     VIGEM_AVAILABLE = False
-    print(f"Warning: vgamepad not available: {e}")
-    print("Install with: pip install vgamepad")
-    print("This will also install the ViGEmBus driver for Xbox controller emulation")
+    if sys.platform == "win32":
+        print(f"Warning: vgamepad not available: {e}")
+        print("Install with: pip install vgamepad")
+        print("This will also install the ViGEmBus driver for Xbox controller emulation")
 
 
 class ViGEmInterface:

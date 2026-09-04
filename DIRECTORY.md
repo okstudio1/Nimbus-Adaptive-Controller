@@ -34,6 +34,9 @@ Python backend — Qt/QML bridge, configuration, hardware interfaces.
 | `config.py` | Configuration manager — profiles, settings, JSON persistence |
 | `vjoy_interface.py` | vJoy driver communication — axis/button output |
 | `vigem_interface.py` | ViGEm Xbox controller emulation (optional) |
+| `uinput_interface.py` | Linux `uinput` back ends: Xbox 360 pad + 8-axis joystick (stand-ins for ViGEm/vJoy) |
+| `controller_pulse.py` | Driver-agnostic controller keep-alive pulse (controller mode off Windows) |
+| `mouse_isolation.py` | Linux `EVIOCGRAB` of the physical mouse + keyboard pass-through (Mouse Isolation) |
 | `qt_dialogs.py` | Native Qt dialogs — Joystick Settings, Button Settings, Axis Mapping |
 | `qt_widgets.py` | Custom Qt widget components |
 | `borderless.py` | Borderless window mode + ClipCursor release (Windows) |
@@ -50,6 +53,7 @@ Python backend — Qt/QML bridge, configuration, hardware interfaces.
 - **`ControllerBridge`** (`bridge.py`) — Singleton exposed to QML as `controller`. All QML↔Python communication goes through here.
 - **`ControllerConfig`** (`config.py`) — Profile management, settings persistence, sensitivity curve calculations.
 - **`VJoyInterface`** (`vjoy_interface.py`) — Low-level vJoy API wrapper.
+- **`UInputXboxInterface` / `UInputJoystickInterface`** (`uinput_interface.py`) — Linux equivalents of ViGEm/vJoy over `/dev/uinput`, same method names.
 - **`TelemetryClient`** (`telemetry.py`) — Opt-in event tracking with local buffer and batch HTTP flush.
 - **`CloudClient`** (`cloud_client.py`) — Supabase auth, OAuth, token vault, profile sync.
 - **`UpdateChecker`** (`updater.py`) — Background version manifest fetch with QML signal integration.
@@ -187,7 +191,7 @@ docs/
 
 | Directory | Purpose |
 |-----------|---------|
-| `tests/` | Test files (unit tests, integration tests) |
+| `tests/` | Driver diagnostics: `test_vjoy.py` (Windows), `test_uinput.py` (Linux round-trip), `probe_evdev_grab.py` (Linux EVIOCGRAB probe), `probe_game_mouselook.py` (in-game isolation check) |
 | `research/` | Research notes, reference materials |
 | `build/` | PyInstaller build cache (gitignored) |
 | `dist/` | Built executables and installers (gitignored) |

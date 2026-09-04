@@ -110,12 +110,12 @@ L1 dominates, and L2 is close to pointless on inspection: the games that would f
 
 | Windows mechanism in Nimbus today | Linux equivalent |
 |---|---|
-| `WH_MOUSE_LL` suppression hook (fails on Raw Input) | `EVIOCGRAB` exclusive grab via python-evdev `InputDevice.grab()`. Only one process may hold it, and nothing else receives events until released. |
+| `WH_MOUSE_LL` suppression hook (fails on Raw Input) | `EVIOCGRAB` exclusive grab. Only one process may hold it, and nothing else receives events until released. **Shipped (2026-09):** `src/mouse_isolation.py`, pure-Python ioctl, no python-evdev, with keyboard pass-through for combo devices and a `Ctrl+Alt+F12` release. |
 | `borderless.py`: ClipCursor polling, borderless conversion | Delete. gamescope and Wayland handle confinement and fullscreen. |
 | `window_utils.py`: `WS_EX_NOACTIVATE` focus juggling | Largely delete. Wayland clients cannot steal focus the way Win32 windows can. |
 | `mouse_hider.py` | Delete. |
-| `vjoy_interface.py` (pyvjoy, requires vJoy driver) | `uinput` virtual device. Kernel module already present on every distro. |
-| `vigem_interface.py` (vgamepad, requires ViGEmBus) | **vgamepad already ships a Linux backend** built on evdev/uinput, same Python API. |
+| `vjoy_interface.py` (pyvjoy, requires vJoy driver) | **Shipped (2026-09):** `UInputJoystickInterface` in `src/uinput_interface.py`, a pure-Python `uinput` device with 8 axes and 56 buttons. |
+| `vigem_interface.py` (vgamepad, requires ViGEmBus) | **Shipped (2026-09):** `UInputXboxInterface`, a `uinput` Xbox 360 pad with the xpad VID/PID. (vgamepad 0.1.0 does have an experimental Linux backend, but it needs libevdev; Nimbus does not use it.) |
 | **Option F: signed kernel filter driver, EV cert, bricking risk** | **`InputDevice.grab()`. One line.** |
 
 That last row is the finding. The single highest-effort item on the Windows roadmap, a kernel-mode mouse class filter driver with a $300 to $600/yr code-signing certificate, is a standard library call on Linux.
@@ -125,7 +125,7 @@ The port is also smaller than it looks. PySide6, QML, `bridge.py`, `config.py`, 
 ### Real friction, honestly
 
 1. **Wayland's isolation cuts both ways.** The same strict client separation that kills the input leak also blocks an always-on-top overlay from positioning itself. `Qt.WindowStaysOnTopHint` does not work on KWin Wayland, and `move()`/`setGeometry()` are not honored. You need `layer-shell-qt` or KWindowSystem, and behavior varies by compositor (GNOME/Mutter notably does not implement layer-shell). For an app whose entire form factor is a floating panel beside a game, this is the main porting tax and it is not trivial.
-2. **vgamepad's Linux backend is marked experimental.** Buttons and axes work with the same API; rumble and LEDs are Windows-only and not yet ported.
+2. **No rumble or LEDs.** Nimbus's own uinput back end covers sticks, triggers, D-pad, and buttons; force feedback is not implemented (it is not on Windows either).
 3. **Anti-cheat is opt-in, not solved.** EAC has supported Proton since 2021, but each developer must enable it. Enabled: **Elden Ring**, Halo MCC, Dead by Daylight, THE FINALS, Squad. Declined: Fortnite, Apex Legends. Vanguard (Valorant, League) is a hard no on Linux. So the competitive-shooter tier stays closed, just for a commercial reason rather than a technical one.
 4. **Market fit.** Windows is where the users are, and "accessibility user running Arch" is a small intersection. This is the genuine strategic cost, and it is larger than any of the technical ones.
 
@@ -143,15 +143,29 @@ Compare that to the Windows VM path in Option C or D: two GPUs, IOMMU-clean moth
 
 If Nimbus runs on Linux, it runs on a Steam Deck, and on Bazzite or ChimeraOS handhelds. For an accessibility-first project, "a preconfigured console you plug into your TV, with the adaptive control surface built in" is a stronger product story than anything achievable on Windows, and it inherits Steam Input on top of Nimbus's own layer.
 
+### Measured, 2026-09-02
+
+The output half of L1 is no longer a plan. Nimbus runs on Linux (`docs/setup/LINUX.md`) and the following were measured on an Ubuntu 24.04 X11 desktop with Steam installed:
+
+| Claim in this section | Result |
+|---|---|
+| A uinput pad is seen as a standard gamepad | **Confirmed.** SDL reports `Xbox 360 Controller`, `SDL_IsGameController() == true`, with its built-in X360 mapping; every stick, trigger, D-pad direction, and button lands on the expected SDL control. Steam's `controller.txt` logged the pad and loaded its `configset_controller_xbox360.vdf` the moment the app started. Proton uses the same SDL path. |
+| `window_utils.py` can "largely" be deleted | **Confirmed for X11.** A Qt window with `Qt.WindowDoesNotAcceptFocus` keeps receiving pointer events while the previously active window keeps keyboard focus, which is Game Focus Mode in one flag. The bridge now uses it off Windows. Wayland is untested; compositors decide focus there. |
+| `EVIOCGRAB` isolates the mouse from everything else | **Confirmed.** `tests/probe_evdev_grab.py` grabbed a mouse's evdev node and synthesised motion: the X11 desktop pointer did not move at all while the grabbing process received every `REL_X/REL_Y` event; releasing the grab restored normal pointer movement. The real Logitech mouse could be grabbed the same way. Reading mouse-class nodes needs the `input` group (or a udev rule); no root, no driver. The one-line claim in the table above holds. **Shipped** as View > Isolate Mouse and as part of Game Mode on Linux, and **confirmed in a real Proton game**: in Carrier Command 2's free-look cockpit a 400 px sweep from a virtual mouse rotated the camera (23,845 changed frame samples) when ungrabbed and changed 1 sample while Nimbus held the grab, with the game confining the pointer the whole time. The same session showed the Steam "Controller Connected: Xbox 360 Controller" toast for the uinput pad, and its A button advanced the title screen. **Then confirmed in Elden Ring under EAC** (2026-09-03): the raw-input camera rotated with an ungrabbed mouse (1,012 changed samples) and not at all while grabbed (66, noise floor 69), the pad's right stick rotated it (16,928), and EAC accepted the whole session ONLINE with the pad, the virtual mouse, and the grab all present. This is the Elden Ring case from section 6 answered: on Linux it is fully compatible. |
+| Wayland form-factor tax (Probe 2) | **Not measured** (X11 host; a nested GNOME Wayland shell would not start). Note that the main window does not use always-on-top or absolute positioning today, so only "does the UI render" is really at stake. |
+| Controller-mode enforcement is Windows-only | **No longer.** The keep-alive pulse is driver-agnostic (`src/controller_pulse.py`) and drives the uinput pad; only the Win32 mouse hook and ClipCursor release stay Windows-specific. |
+
+Two nuances worth keeping in mind for L1. Under Wine/Proton, `ClipCursor` becomes an X pointer grab, so without `EVIOCGRAB` the confinement problem looks the same as on Windows and the controller-mode trick is the counter-measure. The F4 consequence in the probe plan is handled the way it predicted: once the physical mouse is grabbed, Nimbus's own window stops receiving it, so the bridge reads the evdev deltas itself, keeps a software cursor, and delivers synthetic Qt mouse events to its window. The widgets are unchanged.
+
 ## 6. Assessment
 
 **Is it feasible?** Yes, but not as a VM, and not as something Nimbus should ship. The VM options (C and D) are the intuitive answer and the worst-performing ones, because kernel anti-cheat blocks VMs by design and the anti-cheat titles are precisely the ones in the incompatible tier. Building virtualization would be a lot of work to unlock nothing.
 
-**The Linux native path (L1) is the technically correct answer** and requires no special hardware at all. It is also the worst market fit, since the Windows install base is the whole audience. That tension, not any engineering question, is the real decision.
+**The Linux native path (L1) is the technically correct answer** and requires no special hardware at all. It is also the worst market fit, since the Windows install base is the whole audience. That tension, not any engineering question, is the real decision. As of 2026-09 the engineering question is settled: L1 is shipped and measured (section 5, "Measured"), including against an EAC title.
 
 **What is worth doing:**
 
-1. **Probe Linux before committing to anything (one weekend, $0).** Boot Bazzite or a live USB on existing hardware, run Elden Ring under Proton, and write roughly 50 lines of python-evdev plus uinput that grabs the physical mouse and emits a virtual pad. That proves or kills the entire premise without porting Nimbus at all. Elden Ring is the ideal test subject: EAC-enabled for Proton, and currently only partially compatible on Windows because of exactly the camera drift this would eliminate. **Written up as a concrete test plan in [LINUX_PROBE_PLAN.md](LINUX_PROBE_PLAN.md).**
+1. **Probe Linux before committing to anything (one weekend, $0).** Boot Bazzite or a live USB on existing hardware, run Elden Ring under Proton, and write roughly 50 lines of python-evdev plus uinput that grabs the physical mouse and emits a virtual pad. That proves or kills the entire premise without porting Nimbus at all. Elden Ring is the ideal test subject: EAC-enabled for Proton, and currently only partially compatible on Windows because of exactly the camera drift this would eliminate. **Written up as a concrete test plan in [LINUX_PROBE_PLAN.md](LINUX_PROBE_PLAN.md).** **Done (2026-09-03): all four criteria passed against Elden Ring under EAC on existing hardware, and the mechanism shipped as Mouse Isolation; the probe plan carries the numbers.**
 2. **Test cloud gaming (Option B).** One evening, about $20, no hardware. If the physical mouse doesn't leak into the GFN client, that's host mode for free on Windows.
 3. **Document the two-PC setup (Option A)** as the supported path for the raw-input tier on Windows. It requires no Nimbus code at all, since Nimbus's ViGEm output already travels the Moonlight to Sunshine to ViGEm chain correctly. This is a docs change, not a feature.
 4. **Option F stays the long-term Windows answer**, but note that its Linux equivalent is a single library call. If the Linux probe goes well, that reframes the cost/benefit on the driver work considerably.

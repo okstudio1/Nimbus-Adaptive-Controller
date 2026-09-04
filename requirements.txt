@@ -1,8 +1,13 @@
-pyvjoy==1.0.1
+# Windows-only virtual-controller drivers (skipped automatically on Linux/macOS)
+pyvjoy==1.0.1; sys_platform == "win32"
+vgamepad>=0.1.0; sys_platform == "win32"
+
+# Cross-platform core
 numpy>=1.24.0
 PySide6>=6.6.0
-vgamepad>=0.1.0
-pyinstaller>=6.0.0
 httpx>=0.27.0
 keyring>=25.0.0
 sentry-sdk>=2.0.0
+
+# Packaging
+pyinstaller>=6.0.0

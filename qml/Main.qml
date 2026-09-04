@@ -2,6 +2,7 @@ import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Controls.Basic 2.15 as Basic
 import QtQuick.Layouts 1.15
+import QtQuick.Shapes 1.15
 import "components" as Comp
 import "layouts" as Layouts
 
@@ -101,6 +102,12 @@ ApplicationWindow {
         function onNoFocusModeChanged(enabled) {
             // Update menu checkbox when mode changes
             noFocusModeItem.checked = enabled
+        }
+        function onMouseIsolationChanged(active) {
+            mouseIsolationItem.checked = active
+        }
+        function onAlwaysOnTopChanged(enabled) {
+            alwaysOnTopItem.checked = enabled
         }
         function onControllerModeChanged(active) {
             root.gameModeActive = active
@@ -575,7 +582,7 @@ ApplicationWindow {
                 
                 MenuItem {
                     id: outputVjoyItem
-                    text: qsTr("vJoy (DirectInput)")
+                    text: controller ? controller.getOutputModeLabel("vjoy") : qsTr("vJoy (DirectInput)")
                     checkable: true
                     checked: root.outputMode === "vjoy"
                     onTriggered: {
@@ -586,7 +593,7 @@ ApplicationWindow {
                 }
                 MenuItem {
                     id: outputVigemItem
-                    text: qsTr("ViGEm Xbox 360 (XInput)")
+                    text: controller ? controller.getOutputModeLabel("vigem") : qsTr("ViGEm Xbox 360 (XInput)")
                     checkable: true
                     checked: root.outputMode === "vigem"
                     enabled: controller ? controller.isVigemAvailable() : false
@@ -633,6 +640,37 @@ ApplicationWindow {
                     viewMenu.close()
                     Qt.callLater(function(){ 
                         if (controller) controller.noFocusMode = checked
+                    })
+                }
+            }
+            MenuItem {
+                id: alwaysOnTopItem
+                text: qsTr("Always on Top")
+                checkable: true
+                checked: controller ? controller.alwaysOnTop : false
+                enabled: controller ? controller.isAlwaysOnTopAvailable() : false
+                onTriggered: {
+                    viewMenu.close()
+                    Qt.callLater(function(){
+                        if (controller) controller.alwaysOnTop = alwaysOnTopItem.checked
+                    })
+                }
+            }
+            MenuItem {
+                id: mouseIsolationItem
+                text: qsTr("Isolate Mouse (grab physical mouse)")
+                checkable: true
+                checked: controller ? controller.mouseIsolationActive : false
+                enabled: controller ? controller.isMouseIsolationAvailable() : false
+                onTriggered: {
+                    viewMenu.close()
+                    Qt.callLater(function(){
+                        if (!controller) return
+                        if (mouseIsolationItem.checked) {
+                            if (!controller.startMouseIsolation()) mouseIsolationItem.checked = false
+                        } else {
+                            controller.stopMouseIsolation()
+                        }
                     })
                 }
             }
@@ -828,6 +866,9 @@ ApplicationWindow {
 
                 Label { text: "6. Borderless Gaming"; color: "#ff8833"; font.pixelSize: 13; font.bold: true }
                 Label { text: "Go to View → Borderless Gaming to free your cursor from games that lock it.\n\n• Auto-detects running games from our compatibility database\n• Converts windowed games to borderless fullscreen\n• Continuously releases cursor lock so you can reach Nimbus\n• Works with most indie, strategy, and older games\n• See the Compatibility tab for a full list of tested games"; color: "#ccc"; font.pixelSize: 12; wrapMode: Text.WordWrap; width: parent.width }
+
+                Label { text: "7. Always on Top"; color: "#ff8833"; font.pixelSize: 13; font.bold: true }
+                Label { text: "Enable via View → Always on Top to pin the window above everything else, which is what keeps the controls reachable while a fullscreen game is running. Game Mode turns it on for you and off again when you stop, unless you had already pinned it yourself."; color: "#ccc"; font.pixelSize: 12; wrapMode: Text.WordWrap; width: parent.width }
             }
         }
 
@@ -1166,7 +1207,7 @@ ApplicationWindow {
                 id: outputModeMenu
 
                 MenuItem {
-                    text: "vJoy (DirectInput)"
+                    text: controller ? controller.getOutputModeLabel("vjoy") : "vJoy (DirectInput)"
                     checkable: true
                     checked: root.outputMode === "vjoy"
                     onTriggered: {
@@ -1174,7 +1215,7 @@ ApplicationWindow {
                     }
                 }
                 MenuItem {
-                    text: "Xbox 360 (ViGEm)"
+                    text: controller ? controller.getOutputModeLabel("vigem") : "Xbox 360 (ViGEm)"
                     checkable: true
                     checked: root.outputMode === "vigem"
                     enabled: controller ? controller.isVigemAvailable() : false
@@ -1296,6 +1337,15 @@ ApplicationWindow {
                             root.gameModeHwnd = 0
                             root.gameModeTitle = ""
                             gamePickerPopup.visible = false
+                        } else if (!controller.isBorderlessAvailable()) {
+                            // No window picker on this platform (Linux):
+                            // Game Mode = no-focus window + controller keep-alive pulse.
+                            var okNoPicker = controller.startFullGameMode(0, 30)
+                            if (okNoPicker) {
+                                root.gameModeHwnd = 0
+                                root.gameModeTitle = "Controller Mode"
+                                root.gameModeActive = true
+                            }
                         } else {
                             root._refreshGameWindows()
                             gamePickerPopup.visible = !gamePickerPopup.visible
@@ -1306,6 +1356,37 @@ ApplicationWindow {
 
             // Right padding
             Item { width: 4; height: parent.height }
+        }
+    }
+
+    // Software cursor shown while the physical mouse is grabbed (Mouse Isolation, Linux).
+    // The bridge delivers synthetic mouse events in window coordinates at this position;
+    // this item only draws. It lives in the window overlay so it uses window coordinates
+    // (the content item starts below the menu bar) and stays above open menus.
+    Shape {
+        id: isolationCursor
+        objectName: "isolationCursor"
+        parent: Overlay.overlay
+        visible: controller ? controller.mouseIsolationActive : false
+        x: controller ? controller.isolationCursorX : 0
+        y: controller ? controller.isolationCursorY : 0
+        width: 20
+        height: 26
+        z: 10000
+        enabled: false
+        antialiasing: true
+        ShapePath {
+            strokeColor: "black"
+            strokeWidth: 1.5
+            fillColor: "white"
+            startX: 1; startY: 1
+            PathLine { x: 1; y: 20 }
+            PathLine { x: 6; y: 15.5 }
+            PathLine { x: 9.5; y: 23 }
+            PathLine { x: 12.5; y: 21.7 }
+            PathLine { x: 9; y: 14.2 }
+            PathLine { x: 16; y: 14.2 }
+            PathLine { x: 1; y: 1 }
         }
     }
 

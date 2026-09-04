@@ -4,12 +4,13 @@
 
 ## Setup & Installation
 - [Installation Guide](setup/INSTALLATION.md) — installer, vJoy setup, prerequisites, troubleshooting
+- [Linux Setup](setup/LINUX.md) — running on Linux: uinput permissions, output modes, Steam/Proton, Wayland notes
 - [Profile System](setup/PROFILES.md) — profile storage, JSON structure, custom layout widget properties
 - [Packaging Guide](setup/PACKAGING.md) — **build & distribute** — PyInstaller, NSIS, code signing, release checklist
 
 ## Borderless Gaming
 - [Game Compatibility](GAME_COMPATIBILITY.md) — verified/likely/partial/incompatible games, tips by genre, how ClipCursor release works
-- [Host Mode & Input Isolation](vision/HOST_MODE_ISOLATION.md) — research on what it would take to support the Raw Input games listed as incompatible
+- [Host Mode & Input Isolation](vision/HOST_MODE_ISOLATION.md) — research on the Raw Input tier; on Linux it is solved by Mouse Isolation (measured in section 5)
 
 ## Architecture
 - [Architecture Overview](architecture/architecture.md) — codebase structure, QML/Python bridge, widget system, borderless module
@@ -31,7 +32,7 @@
 - [Hardware Integration](vision/HARDWARE_INTEGRATION.md) — wrapping XAC, QuadStick, and other adaptive hardware through vJoy; input pipeline architecture
 - [Keyboard Output](vision/KEYBOARD_OUTPUT.md) — native keystroke/shortcut emission via SendInput; no external dependencies; bundled in installer
 - [Host Mode & Input Isolation](vision/HOST_MODE_ISOLATION.md) — solving the Raw Input tier; VMs, cloud gaming, two-PC streaming, Linux/evdev, and a mouse-class filter driver
-- [Linux Probe Plan](vision/LINUX_PROBE_PLAN.md) — proposed weekend experiment to test EVIOCGRAB + uinput against a real EAC game
+- [Linux Probe Plan](vision/LINUX_PROBE_PLAN.md) — EVIOCGRAB + uinput experiment against a real EAC game; Probe 1 complete: all four criteria pass against Elden Ring under EAC; Wayland (Probe 2) still open
 
 ## Distribution & Sustainability
 - [Business Model](distribution/BUSINESS_MODEL.md) — freemium tiers, market research, pricing, revenue scenarios
