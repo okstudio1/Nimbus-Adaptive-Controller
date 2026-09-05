@@ -201,8 +201,8 @@ Qt `QObject` exposed to QML as `controller`:
 ### `WindowUtils` (`src/window_utils.py`)
 
 Windows-specific utilities for Game Focus Mode:
-- Saves foreground window on mouse press, restores on release
-- Uses Windows API: `GetForegroundWindow`, `SetForegroundWindow`, `AttachThreadInput`
+- Adds `WS_EX_NOACTIVATE` to the Nimbus window and answers `WM_MOUSEACTIVATE` with `MA_NOACTIVATE`, so clicks never move the foreground away from the game
+- Keeps `GetForegroundWindow` / `SetForegroundWindow` / `AttachThreadInput` helpers as a fallback for the rare activation that still happens (Alt+Tab)
 - Only available on Windows; gracefully disabled on other platforms
 
 ### `Borderless` (`src/borderless.py`)
@@ -217,6 +217,16 @@ Borderless gaming and mouse capture (Windows only, pure ctypes):
 - **`GAME_COMPATIBILITY`** — built-in database of verified/likely/partial/incompatible games
 - Exposed via 12 `ControllerBridge` slots (see bridge section above)
 - UI: `qml/components/BorderlessGamingDialog.qml` — game picker, auto-detect, one-click apply, compatibility browser
+
+### `MouseIsolation` (`src/mouse_isolation_win.py`) and the `driver/` filter
+
+Mouse isolation is the answer to games that read the mouse through Raw Input, which neither cursor release nor the `WH_MOUSE_LL` hook can stop (measured in `docs/vision/HOST_MODE_ISOLATION.md`, section 8). It has two halves:
+
+- **Kernel:** `driver/nimbus_moufilter`, a KMDF upper filter on the mouse class. Pass-through by default. While a client holds `\\.\NimbusMouseFilter` open with isolation on, physical mouse packets are withheld from `mouclass` and delivered to the client through `ReadFile`. Isolation is cleared when the client's handle closes and by a 2 s read watchdog; the keyboard is never filtered. Built with `driver\build.ps1` (needs the WDK); not part of `run.py`.
+- **User mode:** `MouseIsolation(on_motion, on_button, on_wheel, on_stopped)`, the same class API as the Linux `src/mouse_isolation.py` (evdev button codes included), so the bridge's software cursor and synthetic Qt events are shared between platforms. `MOUSE_ISOLATION_AVAILABLE` follows the usual graceful-degradation pattern; `start()` raises `RuntimeError` with an install hint when the driver is absent.
+- **Contract:** `driver/nimbus_moufilter/nimbus_moufilter_ioctl.h` and the constants at the top of `mouse_isolation_win.py` must change together.
+
+Status: builds and test-signs; not yet loaded on hardware. See `docs/vision/WINDOWS_MOUSE_FILTER_PLAN.md`.
 
 ---
 

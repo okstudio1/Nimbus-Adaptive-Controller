@@ -1,7 +1,7 @@
 # Nimbus Adaptive Controller — Directory Structure
 
 > **Purpose**: Quick reference for developers and AI assistants to understand the codebase layout.  
-> **Last updated**: March 2026 (v1.4.1)
+> **Last updated**: September 2026 (v1.4.3, plus the unreleased `driver/` work)
 
 ---
 
@@ -39,6 +39,7 @@ Python backend — Qt/QML bridge, configuration, hardware interfaces.
 | `borderless.py` | Borderless window mode + ClipCursor release (Windows) |
 | `mouse_hider.py` | Controller Mode Enforcement — keep-alive pulse + mouse hook (Windows) |
 | `window_utils.py` | Game Focus Mode — save/restore foreground window (Windows) |
+| `mouse_isolation_win.py` | Mouse isolation client for the Nimbus Mouse Filter kernel driver (Windows); same class API as the Linux `mouse_isolation.py` |
 | `telemetry.py` | Opt-in anonymous analytics + crash reporting (local buffer, batch flush) |
 | `cloud_client.py` | User accounts (Email/Google/Facebook OAuth), token management, profile sync |
 | `updater.py` | Lightweight auto-update checker with version manifest and update channels |
@@ -154,12 +155,31 @@ cmd /c build_tools\sign_exe.bat
 
 ---
 
+## Kernel Driver: `driver/`
+
+The Nimbus Mouse Filter, a KMDF upper filter on the mouse class that hands the physical mouse to Nimbus for Raw Input games. Windows only, built separately from the app (needs Visual Studio 2022 with the WDK). Not part of `run.py` and not in any release yet.
+
+| File | Purpose |
+|------|---------|
+| `README.md` | Build, test-signing, and dev-install instructions |
+| `nimbus_moufilter/nimbus_moufilter.c` | The driver: filter callback, control device, isolation IOCTLs, watchdog |
+| `nimbus_moufilter/nimbus_moufilter_ioctl.h` | User/kernel contract, mirrored by `src/mouse_isolation_win.py` |
+| `nimbus_moufilter/nimbus_moufilter.inx` | INF template (service install; class filter entry is added by the install script) |
+| `build.ps1` | Build and collect outputs into `driver/out/` (gitignored) |
+| `enable-testsigning.ps1`, `install-dev.ps1`, `uninstall-dev.ps1` | Elevated dev loop |
+
+---
+
 ## Documentation: `docs/`
 
 ```
 docs/
 ├── README.md                    # Docs index
 ├── GAME_COMPATIBILITY.md        # Borderless gaming game compatibility list
+├── vision/                      # Research and plans
+│   ├── HOST_MODE_ISOLATION.md   # Raw Input tier: options, Windows measurements, prior art
+│   ├── WINDOWS_MOUSE_FILTER_PLAN.md  # The kernel filter design and status
+│   └── LINUX_PROBE_PLAN.md      # The Linux EVIOCGRAB experiment
 ├── setup/                       # Installation & configuration
 │   ├── INSTALLATION.md          # Install guide, vJoy setup
 │   ├── PROFILES.md              # Profile system, save locations
@@ -187,7 +207,7 @@ docs/
 
 | Directory | Purpose |
 |-----------|---------|
-| `tests/` | Test files (unit tests, integration tests) |
+| `tests/` | vJoy diagnostics plus Windows input probes: `probe_rawinput_windows.py` (which countermeasures stop `WM_INPUT`), `probe_game_mouselook_windows.py` (in-game camera motion), `probe_mouse_filter_windows.py` (the kernel filter) |
 | `research/` | Research notes, reference materials |
 | `build/` | PyInstaller build cache (gitignored) |
 | `dist/` | Built executables and installers (gitignored) |

@@ -1,0 +1,61 @@
+;
+; nimbus_moufilter.inf
+;
+; Primitive (DefaultInstall) driver package for the Nimbus Mouse Filter.
+;
+; This INF installs the driver *service* and file only. Registering the driver
+; as an upper filter on the mouse device class (adding "nimbus_moufilter" to
+; HKLM\SYSTEM\CurrentControlSet\Control\Class\{4D36E96F-...}\UpperFilters) is a
+; class-wide, non-HKR registry change that a primitive INF is not allowed to
+; make, so it is done by driver\install-dev.ps1 instead (and, for the shipped
+; product, by the Nimbus installer). See docs/vision/WINDOWS_MOUSE_FILTER_PLAN.md.
+;
+; Install for development:
+;     pnputil /add-driver nimbus_moufilter.inf /install
+;     (then driver\install-dev.ps1 adds the class UpperFilters entry)
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = Mouse
+ClassGuid   = {4D36E96F-E325-11CE-BFC1-08002BE10318}
+Provider    = %Provider%
+DriverVer   =
+CatalogFile = nimbus_moufilter.cat
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 13   ; %SystemRoot%\System32\drivers (Driver Store managed)
+
+[SourceDisksNames]
+1 = %DiskName%,,,
+
+[SourceDisksFiles]
+nimbus_moufilter.sys = 1
+
+[DefaultInstall.NT$ARCH$]
+CopyFiles = nimbus_moufilter.CopyFiles
+
+[DefaultInstall.NT$ARCH$.Services]
+AddService = nimbus_moufilter, 0x00000002, nimbus_moufilter.Service
+
+[nimbus_moufilter.CopyFiles]
+nimbus_moufilter.sys
+
+[nimbus_moufilter.Service]
+DisplayName   = %ServiceDesc%
+ServiceType   = 1      ; SERVICE_KERNEL_DRIVER
+StartType     = 3      ; SERVICE_DEMAND_START (loaded by PnP as a class filter)
+ErrorControl  = 0      ; SERVICE_ERROR_IGNORE (a failed filter must not stop mouclass)
+ServiceBinary = %13%\nimbus_moufilter.sys
+
+[DefaultInstall.NT$ARCH$.Wdf]
+KmdfService = nimbus_moufilter, nimbus_moufilter.Wdf
+
+[nimbus_moufilter.Wdf]
+KmdfLibraryVersion = $KMDFVERSION$
+
+[Strings]
+Provider    = "Nimbus Adaptive Controller"
+ServiceDesc = "Nimbus Mouse Filter"
+DiskName    = "Nimbus Mouse Filter Installation Disk"
