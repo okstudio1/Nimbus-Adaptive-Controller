@@ -10,7 +10,7 @@ Games capture the mouse using one of three mechanisms:
 |---|---|
 | **ClipCursor** — game confines cursor to its window rect | Nimbus continuously releases the clip via polling (`ClipCursor(NULL)`) |
 | **Exclusive Fullscreen** — game takes over the display | Nimbus converts the window to borderless windowed mode |
-| **Raw Input** — game reads mouse delta directly from HID | Use **Controller Mode** (see below) — requires Raw Input: OFF in game settings |
+| **Raw Input**: game reads mouse deltas from the HID stack (`WM_INPUT`) | Turn Raw Input **off** in the game's settings if it has the option, then use **Controller Mode** (see below). If it has no option, nothing in user mode helps (measured, see the Incompatible section); the Nimbus Mouse Filter kernel driver in `driver/` is the fix in development. |
 
 ## Access
 
@@ -47,8 +47,7 @@ Any game that:
 - Supports XInput controllers natively (detects the virtual Xbox 360 pad)
 
 **Games that will NOT work** even with Controller Mode:
-- Games with kernel-level anti-cheat (Vanguard, EAC) — the hook gets blocked
-- Games that use Raw Input exclusively with no toggle option
+- Games that read the mouse through Raw Input (`WM_INPUT`) with no option to turn it off. The hook is not blocked by anti-cheat; it is simply never consulted for `WM_INPUT`. Measured on Elden Ring under EAC on 2026-09-05: the hook dropped every mouse event and the camera still turned. See [Host Mode & Input Isolation, section 8](vision/HOST_MODE_ISOLATION.md#8-measured-on-windows-2026-09-05).
 
 ### How it generalizes across game engines
 
@@ -74,6 +73,7 @@ These games have been tested and confirmed working with Project Nimbus.
 | **Stardew Valley** | ClipCursor | XNA/MonoGame engine. Very accessible with controller support. |
 | **Terraria** | ClipCursor | XNA/MonoGame engine. Great accessibility with controller support. |
 | **The Elder Scrolls V: Skyrim** | ClipCursor | Set to windowed mode in launcher. Full controller support via ViGEm/vJoy. |
+| **Carrier Command 2** | Controller Mode | Measured on Windows 2026-09-05 (v1.5.18): the `WH_MOUSE_LL` hook stops in-game mouse-look completely (11,945 changed frame samples unhooked, 25 hooked, noise floor 50), so it is not a Raw Input game. Its first-person view does not respond to the gamepad right stick, so drive the carrier through its screens with the mouse rather than expecting stick camera control. |
 
 ## Likely Compatible Games
 
@@ -102,7 +102,7 @@ Some features work, with limitations.
 
 | Game | Input Method | Notes |
 |---|---|---|
-| **Elden Ring** | ClipCursor + Raw Input | Use controller mode (ViGEm) — mouse camera won't work. Set to windowed in settings. |
+| **Elden Ring** | ClipCursor + Raw Input | Use controller mode (ViGEm) — mouse camera won't work. Set to windowed in settings. **Measured on Windows 2026-09-05 (v1.17, EAC online):** with a `WH_MOUSE_LL` hook dropping 100% of mouse events the camera still turned (1,759 changed frame samples vs 1,781 unhooked, noise floor 433). Making a Nimbus-like window the foreground window stopped the mouse (312) but the game then ignored the ViGEm pad too (65 vs 12,412 when focused), so the focus trick is not a workaround. Needs the kernel filter in [Windows Mouse Filter Plan](vision/WINDOWS_MOUSE_FILTER_PLAN.md). Fully compatible on Linux. |
 | **Dark Souls III** | ClipCursor + Raw Input | Similar to Elden Ring — use controller mode. Set to windowed in settings first. |
 
 ## Incompatible Games

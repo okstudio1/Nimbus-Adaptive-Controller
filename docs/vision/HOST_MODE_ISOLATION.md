@@ -1,6 +1,6 @@
 # Host Mode: Running Games in an Isolated Environment
 
-**Status:** Research only. No implementation, no commitment.
+**Status:** Research, plus measurements on Windows (section 8, 2026-09-05), a survey of the driver landscape (section 9), and a prototype Windows filter driver in `driver/` that builds but is not yet validated on hardware. Nothing here is shipped.
 **Question:** Could Nimbus run games inside a VM / sandbox ("host mode") the way the Steam Deck appears to, and what hardware would that need?
 
 ---
@@ -221,7 +221,7 @@ Microsoft is removing trust for the legacy cross-signed driver program. The new 
 
 | Project | What it is | Verdict for Nimbus |
 |---|---|---|
-| **[Interception](https://github.com/oblitum/Interception)** | Kernel filter driver plus user-mode C library. Captures keyboard and mouse at driver level, can **block** input or transform it, per-device bindings. Functionally Option F, already built. LGPL library with binary distribution rights for open-source use. | **Closest match, but likely dead.** README states "Tested from Windows XP to Windows 10," with no statement on signing status, Secure Boot, or Windows 11. Given 7.4, a cross-signed driver of that vintage is exactly what the April 2026 change targets. **Verify its current signature before considering it**; if it is cross-signed and not allow-listed, it will stop loading. |
+| **[Interception](https://github.com/oblitum/Interception)** | Kernel filter driver plus user-mode C library. Captures keyboard and mouse at driver level, can **block** input or transform it, per-device bindings. Functionally Option F, already built. LGPL library with binary distribution rights for open-source use. | **Checked 2026-09-05, do not build on it.** Last release 2017, licensor unreachable, signing undocumented, Windows 11 installer failures reported. Details in [section 9.1](#91-interception). |
 | **[MouHidInputHook](https://github.com/changeofpace/MouHidInputHook)** | Filters, modifies, and injects `MOUSE_INPUT_DATA` without modifying the device stacks | Best available **reference** for the architecture. Research code, not shippable. |
 | **[MouClassInputInjection](https://github.com/changeofpace/MouClassInputInjection)** | Kernel interface for injecting mouse packets into the stream | Reference for the injection half. |
 | **`moufiltr` (WDK sample)** | Microsoft's official mouse filter template | **The correct starting point for building.** |
@@ -263,10 +263,117 @@ And one that cuts hard against:
 Do not start with the driver. In order:
 
 1. **Email nefarius.** Ask whether HidHide could ever cover the mouse class, or whether he would advise on it. Effectively free, and he has already solved every adjacent problem.
-2. **Check Interception's current signing status** against the April 2026 change. If it still loads on Windows 11 25H2 with Secure Boot on, it prototypes the entire concept with no driver work at all.
+2. **Check Interception's current signing status.** Done 2026-09-05, see [section 9.1](#91-interception): unmaintained, licensor unreachable, signing undocumented. It is not a prototype path. OpenInputBridge is the maintained successor to watch.
 3. **Run the Linux probe** ([LINUX_PROBE_PLAN.md](LINUX_PROBE_PLAN.md)). It validates the "Nimbus owns the cursor" model from 7.2 for a weekend, and that model is the part most likely to be wrong.
 4. **Open an accessibility dialogue with one anti-cheat vendor** before writing kernel code. If the answer is "we will never allow-list a software mouse-to-pad converter," that is worth knowing before the effort, not after. Respawn's stated position makes them a reasonable first contact.
 5. **Only then** build, using `moufiltr` as the base and attestation signing for distribution.
+
+---
+
+## 8. Measured on Windows (2026-09-05)
+
+Sections 1 to 7 rest on documentation and reasoning. This section is measurement, taken on the dev machine (Windows 11 Pro 25H2, build 26200, 2560x1440 at 100%, ViGEmBus 1.17, Secure Boot off) with two throwaway probes that mirror the Linux ones: `tests/probe_rawinput_windows.py` and `tests/probe_game_mouselook_windows.py`. Both inject motion with `SendInput`, which follows the same `win32k` routing as a physical mouse (foreground rules, `RIDEV_INPUTSINK`, `WH_MOUSE_LL`) but enters above any kernel filter, so these numbers say nothing about Option F itself. They say what user mode can and cannot do.
+
+### 8.1 Raw Input routing, against a fake game
+
+The probe spawns a window that registers for HID mouse Raw Input the way a game does, injects 40 relative moves (summed |delta| 720), and reads back what the game window and a Nimbus stand-in (registered with `RIDEV_INPUTSINK`) received.
+
+| Scenario | Game `WM_INPUT` delta | Game `WM_MOUSEMOVE` | Game told it lost focus? | Nimbus stand-in `WM_INPUT` delta |
+|---|---|---|---|---|
+| Baseline, game foreground | 720 | 40 | no | 720 |
+| `WH_MOUSE_LL` hook returning 1 for every event (hook saw 40, dropped 40) | **720** | 0 | no | 720 |
+| Nimbus stand-in takes the foreground | **0** (720 if the game registered with `RIDEV_INPUTSINK`) | 40 | yes: `WM_ACTIVATE`, `WM_ACTIVATEAPP`, `WM_KILLFOCUS` | 720 |
+| `AttachThreadInput` to the game's queue, then `SetFocus` on the stand-in | 720 with an `hwndTarget` registration, 0 with a NULL target | 40 | yes, same three messages | 720 |
+| `BlockInput(TRUE)` from another process | not testable: `ERROR_ACCESS_DENIED` from a normal process, and it would blind Nimbus as well | | | |
+
+Same result across all four registration styles (`hwndTarget` or NULL, none / `RIDEV_INPUTSINK` / `RIDEV_EXINPUTSINK`). Read it as:
+
+- The hook in `mouse_hider.py` does exactly what the compatibility doc says: it stops `WM_MOUSEMOVE` and nothing else. Dropping 100% of events at `WH_MOUSE_LL` leaves `WM_INPUT` untouched.
+- The **only** user-mode action that stops `WM_INPUT` is taking the foreground away from the game, and a game that registered with `RIDEV_INPUTSINK` keeps receiving even then. Every focus trick delivers the same activation and focus-loss messages engines use to pause or ignore input, so there is no "foreground for Raw Input but not for the game" state to exploit.
+- Nothing else in user mode is left. Microsoft's HID architecture page states why: mouse and keyboard top-level collections are opened exclusively by the Raw Input Manager, so no process can read them, let alone block them, from user mode.
+
+### 8.2 Real games
+
+`tests/probe_game_mouselook_windows.py` captures the game's client area before and after a stimulus and counts changed samples (step 6, RGB delta over 60), the same rule as the Linux probe: moved if above `max(3*noise, 150)`, still if at or below `max(2*noise, 60)`.
+
+**Elden Ring v1.17, EAC, online, windowed 1600x900, in the Stranded Graveyard cave:**
+
+| Condition | Changed samples | Verdict |
+|---|---|---|
+| idle (noise floor) | 433 | still |
+| 400 px mouse sweep, game foreground | 1,781 | moved |
+| same sweep, `WH_MOUSE_LL` dropping 100% of events | **1,759** | **moved** |
+| same sweep, Nimbus stand-in foreground | 312 | still |
+| right stick held 0.6 s (ViGEm), game foreground | 12,412 | moved |
+| right stick held, Nimbus stand-in foreground | **65** | **still** |
+| mouse sweep again, game foreground | 8,797 | moved |
+
+The compass in the saved frames swings from N toward E under the hook. So on Windows, Elden Ring is exactly the case the table in section 1 predicts: the hook is invisible to it, and the one user-mode trick that does stop the mouse also stops the pad, because the game ignores XInput the moment it loses the foreground. EAC did not react to the hook, the injected input, or the focus changes during this session, which is one data point and not a policy.
+
+**Carrier Command 2 v1.5.18** is the opposite case. In a new campaign, first-person on the bridge (maximized window, noise floor 50): a 400 px sweep changed 11,945 samples with the game foreground, **25** with the hook dropping every event, 52 with the stand-in foreground, and 7,186 again afterwards. The menu cockpit behaved the same (41,419 to 1,228). So it reads the mouse through the cursor path, not Raw Input, and Nimbus's existing Full Game Mode already covers it on Windows. The right stick did not move the view in either place (0 changed samples), so the unfocused-pad question was not answerable there.
+
+### 8.3 What this settles
+
+1. **User mode is exhausted on Windows.** The Raw Input tier needs a kernel-mode filter, full stop. The design for it is in [WINDOWS_MOUSE_FILTER_PLAN.md](WINDOWS_MOUSE_FILTER_PLAN.md).
+2. **The foreground trick is not a shortcut for Elden Ring.** It might still be a per-game toggle for games that keep polling XInput while unfocused, but the game that motivates this work is not one of them.
+3. **Interception is not the shortcut either.** Last release 2017, licensor unreachable in 2026 issues, signing status undocumented. On this dev machine the April 2026 Windows Driver Policy is still in evaluation mode (Code Integrity audits `loopbe1.sys`, a cross-signed driver, at every boot, which resets the enforcement counter), so a cross-signed Interception would load here and then stop loading on users' machines once enforcement flips.
+4. **Attestation signing still works** for a new driver, and two MIT projects show the shape of it: RawAccel (a shipping signed mouclass filter that rewrites deltas at the layer Option F would drop them, and works in Raw Input games, which confirms 7.1 empirically) and OpenInputBridge (a clean-room Interception-compatible filter for Windows 11, no signed release yet).
+5. **The Linux branch's user-mode half carries over.** Once the driver delivers packets, `bridge.py`'s software cursor, synthetic Qt events, and the Isolate Mouse UI from `linux-uinput-support` are the Windows implementation too; only the source of deltas changes.
+
+---
+
+## 9. Prior art and the signing landscape, checked 2026-09-05
+
+Section 7 was written from memory of these projects. This is what they look like when checked, with links in the Sources list. Verified facts are stated as facts; inferences are marked.
+
+### 9.1 Interception
+
+- Latest release v1.0.1, 12 May 2017. Last push to the repository 9 Aug 2021. 73 open issues.
+- 2026 issues asking how to buy a license (April) and reporting that "the creator disappeared" (July) are unanswered.
+- The README says only "Tested from Windows XP to Windows 10." No primary source states how `keyboard.sys` and `mouse.sys` are signed. Inference: a 2017 closed-source driver that loads with Secure Boot on is cross-signed, which is the class the 2026 policy de-trusts.
+- Windows 11 reports in 2026: installer failures writing to `system32\drivers` (January, March), and an EAC interference report (April) that implies the driver still loaded on that machine.
+- License: LGPL library plus binary redistribution of the driver for non-commercial use "once communication with drivers happen solely by use of the library and its API"; commercial use needs a paid license from a licensor who appears unreachable.
+- Successor: **OpenInputBridge** (Applet LLC, repository created July 2026), a clean-room, IOCTL-compatible `kbdclass`/`mouclass` upper filter for Windows 11 only. MIT source, self-built binaries need test signing, a paid WHQL-signed build is announced but not shipped, 20-device limit. Its README warns that installing on Windows 10 leaves keyboard and mouse unusable after restart, and that uninstalling with `pnputil -d` leaves remnants that do the same. Read it for the architecture; do not depend on it yet.
+
+### 9.2 The Windows Driver Policy (cross-signed trust removal)
+
+- Announced 26 March 2026. Ships in evaluation mode with the April 2026 security update on Windows 11 24H2, 25H2, 26H1 and Server 2025; "all future versions ... will enforce" it.
+- Enforcement is **per device, not a calendar date**: a device switches to enforcement after 250 hours of active use and 3 reboots (2 on Server) with no audited violation. Any audited cross-signed load resets the counters. (Press coverage in late March quoted 100 hours; the support page says 250.)
+- Detection: Code Integrity operational log event **3076** = audited by the audit policy `{784C4414-79F4-4C32-A6A5-F0FB42A51D0D}`, event **3077** = blocked by the enforce policy `{8F9CB695-5D48-48D6-A329-7202B44607E3}`. `citool -lp -json` lists active policies; `.cip` files live under `System32\CodeIntegrity\CiPolicies\Active\` with the enforce policy parked in `Reserved\` until activation. Microsoft documents `CiTool.exe --remove-policy` as the opt-out.
+- The allow list of reputable cross-signed drivers is embedded in the signed policy; no public list exists.
+- **Attestation-signed drivers are not affected today.** The announcement does not mention attestation; Microsoft's Zac Lockard on OSR: "There's nothing immediate for attestation drivers, although we are looking into how we could have everything require the HLK." The driver-signing page (updated 14 April 2026) now frames attestation as "for testing scenarios", but attestation-signed drivers still load on Windows 11 clients. Never on Server.
+- On the dev machine: the audit policy is active, the enforce policy sits in `Reserved`, and at every boot `loopbe1.sys` is audited (3076) while `gdrv3.sys` and `ene.sys` are blocked (3077).
+
+### 9.3 UsbDk
+
+Red Hat's USB hub filter (Apache-2.0, v1.00-22 in March 2024, attestation-signed since 1.0.19 in 2017) can take any USB device, including a HID mouse, away from Windows and hand it to a user-mode app through libusb. It is a whole-device grab: Windows loses the mouse entirely, the app must parse raw HID reports, composite receivers take the keyboard with them, and Bluetooth mice are out of reach. One unanswered issue reports a 24H2 machine left unbootable, and the libusb wiki discourages the backend for stability. Not a path for Nimbus.
+
+### 9.4 HidHide
+
+Still cannot hide mice or keyboards. The FAQ (copyright 2020 to 2026) repeats that they "travel through different means and routes", and nefarius wrote in 2021 that blocking them "is impossible with the design of HidHide and that's intentional". No nefarius project filters `mouclass`.
+
+### 9.5 What Microsoft's documentation says about user mode
+
+- `RAWINPUTDEVICE`: raw input reaches the registered application "as long as it has the window focus"; with a NULL `hwndTarget` it "follows the keyboard focus"; `RIDEV_INPUTSINK` delivers "even when the caller is not in the foreground"; `RIDEV_EXINPUTSINK` delivers in the background only if the foreground application is not registered. Matches section 8.1 exactly.
+- HID architecture: mouse and keyboard top-level collections are opened exclusively by the Raw Input Manager "for security reasons"; user mode can open them without read or write access. This is the direct denial of an `EVIOCGRAB` equivalent.
+- `LowLevelMouseProc`: runs when an event "is about to be posted into a thread input queue" and only stops "the target window procedure". Raw Input is a separate path.
+- `BlockInput`: blocks "keyboard and mouse input events from reaching applications"; never mentions `WM_INPUT`, needs elevation, and would blind Nimbus too.
+- What is left are fragile tricks: take the foreground yourself (section 8 shows why that fails for Elden Ring), inject a `WH_GETMESSAGE` hook DLL into the game and rewrite `WM_INPUT` (anti-cheat blocks it and `GetRawInputBuffer` bypasses it), or disable the device node (removes the mouse for Nimbus as well).
+
+### 9.6 Other drivers that touch mouse input
+
+| Project | What it is | Usable? |
+|---|---|---|
+| reWASD `hidgamemap.sys` | Proprietary HID-class filter plus a virtual input device; can wedge the HID stack | No, not licensable |
+| Keyran | Proprietary injector driver "for games where macros do not work" | No |
+| Logitech G HUB, Razer | Vendor-specific virtual HID and bus drivers, no mouse suppression | No |
+| QuadStick | A HID device plus a user-mode manager, no kernel driver | Not applicable |
+| **RawAccel** | MIT, signed `mouclass` upper filter, v1.7.1 (July 2025). Rewrites `LastX`/`LastY` at exactly the layer Option F would drop them, and works in Raw Input games | Reference for build, installer, and signing; the filtering logic differs |
+| **`moufiltr`** (WDK sample) | Microsoft's mouse filter template | The starting point |
+
+### 9.7 Bottom line
+
+There is no user-mode Windows equivalent of `EVIOCGRAB`; Microsoft opens mouse collections exclusively and routes Raw Input by foreground on purpose. Every working solution is a kernel filter. Interception is unmaintained with an unreachable licensor, UsbDk is a blunt USB-level grab, HidHide will not help. The realistic options are a Nimbus-owned `moufiltr`-style filter, attestation-signed now (with the risk that Microsoft later requires HLK), or waiting for OpenInputBridge's WHQL build. Either way, ship detection of Code Integrity events 3076 and 3077 so a user whose driver stops loading learns why. The plan is in [WINDOWS_MOUSE_FILTER_PLAN.md](WINDOWS_MOUSE_FILTER_PLAN.md).
 
 ---
 
@@ -310,3 +417,28 @@ Do not start with the driver. In order:
 - [CoD cracks down on Cronus Zen and XIM, Dexerto](https://www.dexerto.com/call-of-duty/cod-cracks-down-on-cronus-zen-xim-in-major-anti-cheat-update-for-black-ops-7-season-2-3313252/)
 - [CoD unbans disabled streamer after accessibility controller flagged as cheating device, Dexerto](https://www.dexerto.com/twitch/paralyzed-cod-warzone-streamer-begs-activision-for-help-after-accessibility-controller-ban-3367476/)
 - [AbleGamers: don't lock out gamers with disabilities](https://ablegamers.org/ablegamers-plea-to-microsoft-dont-lock-out-gamers-with-disabilities/)
+
+### Sections 8 and 9: Windows measurements, prior art, and signing (checked 2026-09-05)
+
+- [RAWINPUTDEVICE structure, Microsoft Learn](https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-rawinputdevice)
+- [WM_INPUT message, Microsoft Learn](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-input)
+- [HID Architecture (exclusive access to mouse and keyboard collections), Microsoft Learn](https://learn.microsoft.com/en-us/windows-hardware/drivers/hid/hid-architecture)
+- [LowLevelMouseProc callback, Microsoft Learn](https://learn.microsoft.com/en-us/windows/win32/winmsg/lowlevelmouseproc)
+- [BlockInput function, Microsoft Learn](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-blockinput)
+- [GetMsgProc callback, Microsoft Learn](https://learn.microsoft.com/en-us/windows/win32/winmsg/getmsgproc)
+- [Interception releases](https://api.github.com/repos/oblitum/Interception/releases) and [issues](https://github.com/oblitum/Interception/issues)
+- [Applet-LLC/OpenInputBridge](https://github.com/Applet-LLC/OpenInputBridge)
+- [The Windows Driver Policy, Microsoft Support](https://support.microsoft.com/en-us/windows/hardware/drivers/the-windows-driver-policy)
+- [OSR thread on the Windows Driver Policy, with Microsoft's comment on attestation](https://community.osr.com/t/advancing-windows-driver-security-the-windows-driver-policy/60086)
+- [Driver blocked by the policy: openport.sys fix notes (event 3077)](https://www.recusoft.com/driverblocked/fix.html)
+- [Microsoft Q&A: how do I remove the Windows Driver Policy](https://learn.microsoft.com/en-us/answers/questions/5921477/how-do-i-remove-windows-driver-policy)
+- [daynix/UsbDk releases](https://github.com/daynix/usbdk/releases), [issue #134 (24H2 boot failure)](https://github.com/daynix/UsbDk/issues/134), [Red Hat bug 1434314 (attestation signing)](https://bugzilla.redhat.com/show_bug.cgi?id=1434314)
+- [libusb wiki: Windows backends](https://github.com/libusb/libusb/wiki/Windows)
+- [HidHide issue #4: keyboard and mouse hiding is impossible by design](https://github.com/nefarius/HidHide/issues/4)
+- [nefarius project index](https://docs.nefarius.at/projects/)
+- [reWASD forum: hidgamemap.sys](https://forum.rewasd.com/forum/rewasd/technical-questions-aa/219751-hidgamemap-sys-has-issues-that-needs-to-be-addressed-asap)
+- [Keyran wiki](https://keyran.net/en/wiki/)
+- [RawAccelOfficial/rawaccel](https://github.com/RawAccelOfficial/rawaccel)
+- [moufiltr sample source](https://github.com/microsoft/Windows-driver-samples/tree/main/input/moufiltr)
+- [Supported WDK downloads (26100.6584 for Visual Studio 2022)](https://learn.microsoft.com/en-us/windows-hardware/drivers/other-wdk-downloads)
+- [Install the WDK using NuGet](https://learn.microsoft.com/en-us/windows-hardware/drivers/install-the-wdk-using-nuget)
