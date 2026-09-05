@@ -12,6 +12,7 @@ session; the mouse is isolated for at most a few seconds at a time):
   U3  handle drop: isolation set on a raw handle is cleared when the handle closes
   U4  watchdog: isolation with no read pending is cleared within ~3 s
   U5  exclusivity: a second open fails while the first handle is open
+  U6  a read after the watchdog release fails at once with ERROR_NOT_READY
 
 Attended phases (``--attended``): a fake Raw Input game and a Nimbus stand-in
 from ``probe_rawinput_windows.py`` are spawned, and you move the physical mouse
@@ -79,18 +80,24 @@ def unattended() -> None:
 
     # U2: the module's own lifecycle
     motion = {"n": 0}
-    m = iso.MouseIsolation(lambda dx, dy: motion.__setitem__("n", motion["n"] + 1), lambda c, p: None)
+    stops: List[str] = []
+    m = iso.MouseIsolation(lambda dx, dy: motion.__setitem__("n", motion["n"] + 1), lambda c, p: None,
+                           on_stopped=stops.append)
     try:
         m.start()
         time.sleep(0.5)
-        # Status must be read through a second handle; the device is exclusive,
-        # so use the driver's own status via a fresh open after stop instead.
-        active_ok = m.active
+        # The device is exclusive, so status while active must go through the
+        # instance's own handle; get_status() would fail here.
+        live = m.status()
+        active_ok = m.active and live["isolating"] == 1
+        grabbed = m.grabbed_devices
         m.stop("probe")
         time.sleep(0.3)
         st2 = iso.get_status()
-        record("U2 start/stop lifecycle", active_ok and st2["isolating"] == 0,
-               f"active={active_ok} isolating_after_stop={st2['isolating']} motion_events={motion['n']}")
+        record("U2 start/stop lifecycle",
+               active_ok and st2["isolating"] == 0 and len(grabbed) == 1 and stops == ["probe"],
+               f"active={active_ok} isolating_live={live['isolating']} pending_reads_live={live['pending_reads']} "
+               f"grabbed={len(grabbed)} isolating_after_stop={st2['isolating']} stop_reasons={stops} motion_events={motion['n']}")
     except Exception as exc:
         record("U2 start/stop lifecycle", False, str(exc))
         try:
@@ -117,18 +124,35 @@ def unattended() -> None:
         raw_set_isolation(h, True)
         print("      (mouse isolated with no reader; the watchdog should release it in about 2 s)", flush=True)
         time.sleep(3.2)
-        # Read status through the same handle so we do not have to close it first.
-        buf = ctypes.create_string_buffer(32)
-        returned = wintypes.DWORD(0)
-        ok = iso._k32.DeviceIoControl(h, iso.IOCTL_NIMBUS_GET_STATUS, None, 0, buf, 32, ctypes.byref(returned), None)
-        iso._k32.CloseHandle(h)
-        if not ok:
-            raise RuntimeError(f"GET_STATUS failed: {ctypes.get_last_error()}")
-        import struct
-        vals = struct.unpack("<8I", buf.raw[:32])
-        isolating, releases = vals[1], vals[7]
+        # Status through the same handle: the device is exclusive.
+        st4 = iso._query_status(h)
+        isolating, releases = st4["isolating"], st4["watchdog_releases"]
         record("U4 watchdog releases isolation", isolating == 0 and releases == before + 1,
                f"isolating={isolating} watchdog_releases {before} -> {releases}")
+
+        # U6: a read after the release must fail fast with ERROR_NOT_READY, which
+        # is how MouseIsolation's reader learns the mouse was given back.
+        buf = ctypes.create_string_buffer(iso._MOUSE_INPUT_DATA.size)
+        returned = wintypes.DWORD(0)
+        ov = iso._OVERLAPPED()
+        ov.hEvent = iso._k32.CreateEventW(None, True, False, None)
+        t0 = time.monotonic()
+        ok = iso._k32.ReadFile(h, buf, ctypes.sizeof(buf), ctypes.byref(returned), ctypes.byref(ov))
+        err = 0 if ok else ctypes.get_last_error()
+        if err == iso.ERROR_IO_PENDING:
+            # Give a slow completion a moment, then treat a still-pending read as the old hang.
+            time.sleep(0.5)
+            if iso._k32.GetOverlappedResult(h, ctypes.byref(ov), ctypes.byref(returned), False):
+                err = 0
+            else:
+                err = ctypes.get_last_error()
+            if err == 996:  # ERROR_IO_INCOMPLETE: still pending, would wait forever
+                iso._k32.CancelIoEx(h, None)
+        elapsed = time.monotonic() - t0
+        iso._k32.CloseHandle(ov.hEvent)
+        iso._k32.CloseHandle(h)
+        record("U6 read after release fails with ERROR_NOT_READY", err == iso.ERROR_NOT_READY,
+               f"error={err} after {elapsed:.3f}s (expected {iso.ERROR_NOT_READY})")
     except Exception as exc:
         record("U4 watchdog releases isolation", False, str(exc))
 

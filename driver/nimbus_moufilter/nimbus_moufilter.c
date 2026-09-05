@@ -24,6 +24,9 @@
  * - Handle cleanup (crash, kill, exit) restores pass-through.
  * - A watchdog restores pass-through if the client has no read pending for
  *   NIMBUS_MOUFILTER_WATCHDOG_MS while isolating.
+ * - Reads fail with STATUS_DEVICE_NOT_READY whenever isolation is off, so a
+ *   client whose read comes back that way knows the mouse was given back
+ *   instead of waiting forever for packets that will never be captured.
  * - The keyboard is never touched.
  *
  * Environment: kernel mode only.
@@ -34,6 +37,8 @@
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text (INIT, DriverEntry)
 #pragma alloc_text (PAGE, NimbusFilter_EvtDeviceAdd)
+#pragma alloc_text (PAGE, NimbusFilter_Detach)
+#pragma alloc_text (PAGE, NimbusFilter_EvtDeviceSelfManagedIoCleanup)
 #pragma alloc_text (PAGE, NimbusFilter_EvtDeviceContextCleanup)
 #pragma alloc_text (PAGE, NimbusFilter_EvtIoInternalDeviceControl)
 #pragma alloc_text (PAGE, NimbusControl_Create)
@@ -132,6 +137,30 @@ NimbusServicePendingReads(
     }
 }
 
+/*
+ * Fail every pending read: isolation has just been switched off, so no packet
+ * will ever arrive for them. Callable at IRQL <= DISPATCH_LEVEL.
+ */
+static VOID
+NimbusFailPendingReads(
+    VOID
+    )
+{
+    WDFQUEUE queue;
+    WDFREQUEST request;
+
+    WdfSpinLockAcquire(g.Lock);
+    queue = g.ReadQueue;
+    WdfSpinLockRelease(g.Lock);
+
+    if (queue == NULL) {
+        return;
+    }
+    while (NT_SUCCESS(WdfIoQueueRetrieveNextRequest(queue, &request))) {
+        WdfRequestCompleteWithInformation(request, STATUS_DEVICE_NOT_READY, 0);
+    }
+}
+
 /* Queue packets for the client (drop oldest on overflow), then deliver. */
 static VOID
 NimbusCapturePackets(
@@ -208,6 +237,7 @@ NimbusFilter_EvtDeviceAdd(
     )
 {
     WDF_OBJECT_ATTRIBUTES deviceAttributes;
+    WDF_PNPPOWER_EVENT_CALLBACKS pnpCallbacks;
     WDF_IO_QUEUE_CONFIG ioQueueConfig;
     WDFDEVICE hDevice;
     PFILTER_EXTENSION ext;
@@ -217,6 +247,16 @@ NimbusFilter_EvtDeviceAdd(
 
     WdfFdoInitSetFilter(DeviceInit);
     WdfDeviceInitSetDeviceType(DeviceInit, FILE_DEVICE_MOUSE);
+
+    /*
+     * The control device is torn down from EvtDeviceSelfManagedIoCleanup,
+     * which WDF calls at PASSIVE_LEVEL after this mouse's I/O has stopped.
+     * The context cleanup below is only the fallback for a device that was
+     * added but never started (see NimbusFilter_Detach).
+     */
+    WDF_PNPPOWER_EVENT_CALLBACKS_INIT(&pnpCallbacks);
+    pnpCallbacks.EvtDeviceSelfManagedIoCleanup = NimbusFilter_EvtDeviceSelfManagedIoCleanup;
+    WdfDeviceInitSetPnpPowerEventCallbacks(DeviceInit, &pnpCallbacks);
 
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&deviceAttributes, FILTER_EXTENSION);
     deviceAttributes.EvtCleanupCallback = NimbusFilter_EvtDeviceContextCleanup;
@@ -258,9 +298,16 @@ NimbusFilter_EvtDeviceAdd(
     return status;
 }
 
+/*
+ * Take one mouse out of the driver-wide counts and remove the control device
+ * with the last one. Idempotent, because it runs twice per device: from
+ * EvtDeviceSelfManagedIoCleanup (the normal path, PASSIVE_LEVEL, I/O stopped)
+ * and again from the object's context cleanup, which is the only callback a
+ * device that was added but never started will see.
+ */
 VOID
-NimbusFilter_EvtDeviceContextCleanup(
-    IN WDFOBJECT Device
+NimbusFilter_Detach(
+    _In_ WDFDEVICE Device
     )
 {
     PFILTER_EXTENSION ext = FilterGetData(Device);
@@ -281,6 +328,24 @@ NimbusFilter_EvtDeviceContextCleanup(
         }
         WdfWaitLockRelease(g.ControlLock);
     }
+}
+
+VOID
+NimbusFilter_EvtDeviceSelfManagedIoCleanup(
+    IN WDFDEVICE Device
+    )
+{
+    PAGED_CODE();
+    NimbusFilter_Detach(Device);
+}
+
+VOID
+NimbusFilter_EvtDeviceContextCleanup(
+    IN WDFOBJECT Device
+    )
+{
+    PAGED_CODE();
+    NimbusFilter_Detach((WDFDEVICE)Device);
 }
 
 VOID
@@ -549,6 +614,10 @@ NimbusControl_EvtIoDeviceControl(
             break;
         }
         NimbusSetIsolating(*enable != 0);
+        if (*enable == 0) {
+            /* The client's reader is parked in ReadFile; give it its answer. */
+            NimbusFailPendingReads();
+        }
         WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS, 0);
         return;
 
@@ -588,6 +657,7 @@ NimbusControl_EvtIoRead(
 {
     PCONTROL_EXTENSION ctl = ControlGetData(WdfIoQueueGetDevice(Queue));
     NTSTATUS status;
+    BOOLEAN isolating;
     BOOLEAN haveData;
 
     if (Length < sizeof(MOUSE_INPUT_DATA)) {
@@ -596,9 +666,21 @@ NimbusControl_EvtIoRead(
     }
 
     WdfSpinLockAcquire(g.Lock);
+    isolating = (g.Isolating != 0);
     haveData = (g.RingCount > 0);
     g.LastReadActivity = KeQueryInterruptTime();
     WdfSpinLockRelease(g.Lock);
+
+    if (!isolating) {
+        /*
+         * Nothing is captured while passing through, so this read would wait
+         * forever. Failing it is how the client finds out that the watchdog
+         * released isolation (ERROR_NOT_READY in user mode). The ring is
+         * always emptied when isolation goes off, so no packets are lost.
+         */
+        WdfRequestCompleteWithInformation(Request, STATUS_DEVICE_NOT_READY, 0);
+        return;
+    }
 
     if (haveData) {
         NimbusCompleteRead(Request);

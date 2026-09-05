@@ -13,11 +13,19 @@
  * Reads return an array of MOUSE_INPUT_DATA (ntddmou.h, 24 bytes each):
  *   USHORT UnitId; USHORT Flags; USHORT ButtonFlags; USHORT ButtonData;
  *   ULONG RawButtons; LONG LastX; LONG LastY; ULONG ExtraInformation;
- * A read completes as soon as at least one packet is available.
+ * A read completes as soon as at least one packet is available. A read that
+ * is issued, or still pending, while isolation is off fails with
+ * STATUS_DEVICE_NOT_READY (ERROR_NOT_READY, 21, in user mode). That is how a
+ * client learns that the watchdog released the mouse; a client that turned
+ * isolation off itself sees the same failure on its parked read.
  *
  * Safety: isolation is cleared when the client's handle is cleaned up (crash,
  * kill, exit) and by a watchdog when no read has been pending for
  * NIMBUS_MOUFILTER_WATCHDOG_MS while isolating.
+ *
+ * Interface versions
+ *   1  first build: SET_ISOLATION, GET_STATUS, ReadFile delivery
+ *   2  reads fail with STATUS_DEVICE_NOT_READY while isolation is off
  */
 #pragma once
 
@@ -25,7 +33,7 @@
 #define NIMBUS_MOUFILTER_SYMLINK_NAME     L"\\DosDevices\\NimbusMouseFilter"
 #define NIMBUS_MOUFILTER_USER_PATH        L"\\\\.\\NimbusMouseFilter"
 
-#define NIMBUS_MOUFILTER_INTERFACE_VERSION 1
+#define NIMBUS_MOUFILTER_INTERFACE_VERSION 2
 #define NIMBUS_MOUFILTER_WATCHDOG_MS       2000
 
 #ifndef CTL_CODE

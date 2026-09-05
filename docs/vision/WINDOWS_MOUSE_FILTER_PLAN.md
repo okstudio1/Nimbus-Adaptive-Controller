@@ -1,6 +1,6 @@
 # Windows Mouse Filter Plan
 
-**Status:** Proposed. Nothing here is built yet.
+**Status:** Prototype built and test-signed (section 6), not yet loaded on hardware. Matches `driver/README.md`.
 **Parent doc:** [HOST_MODE_ISOLATION.md](HOST_MODE_ISOLATION.md) (Option F). Measurements that motivate this plan are recorded there under "Measured on Windows".
 **Linux counterpart:** [LINUX_PROBE_PLAN.md](LINUX_PROBE_PLAN.md) and `src/mouse_isolation.py` on the `linux-uinput-support` branch, which this plan reuses.
 
@@ -23,10 +23,10 @@ Everything else Nimbus needs (software cursor, synthetic Qt events, deadzones, c
 |---|---|
 | Base | WDK `moufiltr` sample (KMDF). `MouFilter_ServiceCallback` is the one function that matters: it is where packets are dropped or forwarded. |
 | Control device | `\\.\NimbusMouseFilter`, one client at a time. |
-| Packet delivery | Inverted call: the client keeps one or more `IOCTL_NIMBUS_READ` requests pending; the driver completes them with an array of `MOUSE_INPUT_DATA` (verbatim: `UnitId`, `Flags`, `ButtonFlags`, `ButtonData`, `RawButtons`, `LastX`, `LastY`, `ExtraInformation`). If no request is pending, packets go to a bounded ring (drop oldest) so a slow client never stalls the input stack. |
-| Control | `IOCTL_NIMBUS_SET_ISOLATION {enabled: BOOL}`. |
+| Packet delivery | Inverted call: the client keeps a `ReadFile` pending on the control device; the driver completes it with an array of `MOUSE_INPUT_DATA` (verbatim: `UnitId`, `Flags`, `ButtonFlags`, `ButtonData`, `RawButtons`, `LastX`, `LastY`, `ExtraInformation`). If no read is pending, packets go to a bounded ring (drop oldest) so a slow client never stalls the input stack. A read issued or pending while isolation is off fails with `STATUS_DEVICE_NOT_READY`, which is how the client learns about a watchdog release (interface v2). |
+| Control | `IOCTL_NIMBUS_SET_ISOLATION {enabled: ULONG}` and `IOCTL_NIMBUS_GET_STATUS` (version and counters). |
 | Device selection | First version: all mice. Second version: per-`UnitId` mask, since combo devices and multi-node mice exist on Windows too. |
-| Release guarantees | Isolation is tied to the client handle: `IRP_MJ_CLEANUP` (crash, kill, exit) restores pass-through. Plus a watchdog: if no read completes for 2 s while isolated, restore pass-through. Keyboard is never touched, so `Ctrl+Alt+F12` and `Ctrl+Alt+Del` always work. |
+| Release guarantees | Isolation is tied to the client handle: `IRP_MJ_CLEANUP` (crash, kill, exit) restores pass-through. Plus a watchdog: if no read is pending for 2 s while isolated, restore pass-through. Keyboard is never touched, so `Ctrl+Alt+Del` always works and `Ctrl+Alt+F12` can be wired as the release hotkey (section 2.2). |
 | Injection | None. The driver never inserts packets. When isolation is off, the mouse simply flows again. |
 | Size | Roughly 500 to 700 lines of C on top of the sample. |
 
@@ -41,7 +41,12 @@ MouseIsolation(on_motion, on_button, on_wheel=None, on_stopped=None, hotkey=True
     .active, .grabbed_devices, .stop_reason
 ```
 
-Internally it opens the control device, pends reads on a thread, converts `MOUSE_INPUT_DATA` to `(dx, dy)`, buttons, and wheel notches, and fires the same callbacks. `src/bridge.py` then needs only the platform switch the Linux branch already has (`MOUSE_ISOLATION_AVAILABLE`), and the software cursor, `_IsolationRelay`, `_iso_send_mouse`, and the `Isolate Mouse` menu item carry over unchanged. `Ctrl+Alt+F12` uses the existing `WH_KEYBOARD_LL` hotkey thread in `mouse_hider.py`; it must call `stop()` on the isolation object as well as the pulse.
+Internally it opens the control device, pends reads on a thread, converts `MOUSE_INPUT_DATA` to `(dx, dy)`, buttons, and wheel notches, and fires the same callbacks. Absolute-position packets (`MOUSE_MOVE_ABSOLUTE`: RDP, VM pointers, tablets in mouse mode) are turned into pixel deltas against the previous position. `src/bridge.py` then needs only the platform switch the Linux branch already has (`MOUSE_ISOLATION_AVAILABLE`), and the software cursor, `_IsolationRelay`, `_iso_send_mouse`, and the `Isolate Mouse` menu item carry over unchanged. `Ctrl+Alt+F12` uses the existing hotkey thread in `mouse_hider.py`; it must call `stop()` on the isolation object as well as the pulse, and until that wiring lands the module installs no hotkey (release is `stop()`, closing Nimbus, or the watchdog).
+
+Two things to get right in that merge:
+
+- `MOUSE_ISOLATION_AVAILABLE` in the Windows module is True only when the driver's control device opened at import time, so a Windows machine without the driver keeps today's `mouse_hider` Game Mode. The Linux flag is platform-only; do not "simplify" the Windows one back to that, or Game Mode would skip `mouse_hider` on every Windows machine.
+- In the Linux branch's `startFullGameMode`, the `mouse_hider` step is an `elif` on the isolation step. On Windows both should run: isolation takes the packets away, and `mouse_hider` still owns the `ClipCursor` release and the `Ctrl+Alt+F12` hotkey. Make them independent `if`s.
 
 `window_utils.py` (WS_EX_NOACTIVATE) stays exactly as it is. The game keeps the foreground, which is the whole point: the pad keeps working and the mouse is gone.
 
@@ -92,7 +97,7 @@ Internally it opens the control device, pends reads on a thread, converts `MOUSE
      The 32-bit `MSBuild.exe` resolves the kit on its own but then fails to load `InfVerif.dll`, so INF verification silently does not run there.
 
    Still to do for this step: enable test signing (`bcdedit /set testsigning on`, needs the Admin account and a reboot) and load the sample once to prove the install path.
-2. **Written 2026-09-05, not yet loaded.** `driver/nimbus_moufilter/` holds the filter (control device, `IOCTL_NIMBUS_SET_ISOLATION`, `IOCTL_NIMBUS_GET_STATUS`, inverted-call reads through `ReadFile`, a 1024-packet ring, handle-cleanup and watchdog release), `src/mouse_isolation_win.py` is the client with the Linux class API, and `driver/build.ps1`, `enable-testsigning.ps1`, `install-dev.ps1`, `uninstall-dev.ps1` cover the dev loop. It builds, test-signs and passes InfVerif. The INF installs only the service; the class `UpperFilters` entry is added by `install-dev.ps1` because a primitive INF may not write outside `HKR` (InfVerif 1321). Still to do: enable test signing, reboot, install, and pass test-plan items 1, 2 and 4 with the real mouse.
+2. **Written 2026-09-05, not yet loaded.** `driver/nimbus_moufilter/` holds the filter (control device, `IOCTL_NIMBUS_SET_ISOLATION`, `IOCTL_NIMBUS_GET_STATUS`, inverted-call reads through `ReadFile`, a 1024-packet ring, handle-cleanup and watchdog release), `src/mouse_isolation_win.py` is the client with the Linux class API, and `driver/build.ps1`, `enable-testsigning.ps1`, `install-dev.ps1`, `uninstall-dev.ps1` cover the dev loop. It builds, test-signs and passes InfVerif. The INF installs only the service; the class `UpperFilters` entry is added by `install-dev.ps1` because a primitive INF may not write outside `HKR` (InfVerif 1321). Review fixes the same day (interface v2): reads fail with `STATUS_DEVICE_NOT_READY` while isolation is off so the client sees a watchdog release; the client reads status through its own handle (the device is exclusive), maps `ERROR_ACCESS_DENIED` on a second open, handles absolute-motion packets, and reports the driver as available only when the device opens; `install-dev.ps1` detaches a loaded build before replacing the file. Still to do: enable test signing, reboot, install, and pass test-plan items 1, 2 and 4 with the real mouse.
 3. Merge or rebase onto `linux-uinput-support` so the bridge's isolation plumbing is shared, then wire the Windows module in and pass item 2 against Elden Ring.
 4. Partner Center registration, attestation signing, installer changes, item 4.
 5. Disclosure: publish the driver's name and purpose, and open the anti-cheat conversation described in the parent doc before the first release that ships it.

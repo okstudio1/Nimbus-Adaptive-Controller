@@ -28,7 +28,7 @@ not yet attestation-signed. Do not ship it yet.
 | `nimbus_moufilter/nimbus_moufilter.vcxproj` | KMDF driver project, `WindowsKernelModeDriver10.0` toolset. |
 | `build.ps1` | Build and collect outputs into `out/`. |
 | `enable-testsigning.ps1` | Install the test cert and turn on test signing (elevated, one reboot). |
-| `install-dev.ps1` / `uninstall-dev.ps1` | Register/unregister the class filter for development (elevated). |
+| `install-dev.ps1` / `uninstall-dev.ps1` | Register/unregister the class filter for development (elevated). `install-dev.ps1` also updates a loaded build: it detaches the filter, replaces the file, and re-attaches. |
 
 ## Build
 
@@ -50,6 +50,10 @@ the 64-bit `KitsRoot10` registry value can point at the wrong folder and the
 driver\enable-testsigning.ps1   # once; then reboot
 driver\install-dev.ps1          # copies the .sys, creates the service, adds the class UpperFilters, restarts the mice
 ```
+
+Run `install-dev.ps1` again after every rebuild. If the previous build is
+loaded it detaches it first (the mice restart twice), because a loaded driver
+holds its `.sys` open and the copy would otherwise fail.
 
 `install-dev.ps1` inserts `nimbus_moufilter` **in front of** `mouclass` in the
 mouse class `UpperFilters` list. Filters attach in list order, first listed
@@ -73,12 +77,18 @@ attestation-signed build.
 
 ## Safety
 
-- The control device is exclusive: one client at a time.
+- The control device is exclusive: one client at a time. A second open fails
+  with `ERROR_ACCESS_DENIED`.
 - Isolation is cleared when the client's handle closes (crash, kill, exit).
 - A watchdog clears isolation if no read is pending for 2 s while isolating.
-- The keyboard is never filtered, so `Ctrl+Alt+F12` (handled in
-  `src/mouse_hider.py`) and `Ctrl+Alt+Del` always work, and every recovery
-  below can be done from the keyboard.
+  Once isolation is off, every read fails with `ERROR_NOT_READY`, so the
+  client notices a watchdog release at its next read and reports the stop
+  instead of driving a dead software cursor.
+- The keyboard is never filtered, so `Ctrl+Alt+Del` always works and every
+  recovery below can be done from the keyboard. There is no release hotkey
+  yet: the `Ctrl+Alt+F12` listener in `src/mouse_hider.py` only runs during
+  Controller Mode and only stops the pulse. Wiring it to
+  `mouse_isolation_win.stop_all()` is part of the bridge integration.
 - A class upper filter is **mandatory once listed**: if the driver fails to
   load, Windows does not start the mouse devices (Device Manager Code 39 or
   Code 19) until the `UpperFilters` entry is removed. `install-dev.ps1`
@@ -93,6 +103,6 @@ attestation-signed build.
 | Mouse dead right after `install-dev.ps1`, script reported a rollback | Driver did not load (signature, test signing, or a load-time bug) | Nothing to do; the rollback already removed the entry. Replug the mouse if it has not come back. Read the reason the script printed. |
 | Mouse dead, no rollback (script interrupted, or `-NoRollback`) | `UpperFilters` still names a driver that will not start | Keyboard: `Win+X`, `A` for an elevated PowerShell, run `driver\uninstall-dev.ps1`, replug the mouse. Or in `regedit`, under `HKLM\SYSTEM\CurrentControlSet\Control\Class\{4D36E96F-E325-11CE-BFC1-08002BE10318}`, edit `UpperFilters` so it reads only `mouclass` (the list normally holds `nimbus_moufilter` above `mouclass`; **`mouclass` must stay**, it is the mouse class driver itself). |
 | Blue screen when a mouse starts (possibly at every boot) | A bug in the filter | Windows opens the recovery environment after two failed boots (or hold Shift while clicking Restart). Troubleshoot, Advanced options, System Restore, pick the "Before Nimbus Mouse Filter dev install" point. Alternative from the recovery Command Prompt: `reg load HKLM\sys C:\Windows\System32\config\SYSTEM`, then `reg add "HKLM\sys\ControlSet001\Control\Class\{4D36E96F-E325-11CE-BFC1-08002BE10318}" /v UpperFilters /t REG_MULTI_SZ /d mouclass /f`, then `reg unload HKLM\sys`. Never delete the value outright: `mouclass` has to remain in it. |
-| Cursor frozen while Nimbus is running | Isolation is on and the client is alive | Expected while Full Game Mode isolates. `Ctrl+Alt+F12`, or close Nimbus. The watchdog releases within 2 s if Nimbus stops reading; closing the handle releases immediately. |
+| Cursor frozen while Nimbus is running | Isolation is on and the client is alive | Expected while Full Game Mode isolates. Close Nimbus (Alt+F4 or Task Manager from the keyboard); closing the handle releases immediately. `Ctrl+Alt+F12` does not release isolation until the bridge wires it. The watchdog releases within 2 s if Nimbus stops reading. |
 | Cursor frozen and Nimbus is gone | Should not happen (handle cleanup clears isolation) | Replug the mouse (a fresh device instance), or reboot; the flag does not survive a driver reload. Then file the bug with the output of `--status`. |
 | "Test Mode" watermark, anti-cheat games refuse to start | Test signing is on | `bcdedit /set testsigning off` from an elevated prompt, reboot. Do this before playing EAC/BattlEye/Vanguard titles; the unsigned dev driver cannot load without it. |

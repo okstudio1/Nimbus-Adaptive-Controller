@@ -69,6 +69,7 @@ typedef struct _NIMBUS_GLOBALS {
 DRIVER_INITIALIZE DriverEntry;
 
 EVT_WDF_DRIVER_DEVICE_ADD                    NimbusFilter_EvtDeviceAdd;
+EVT_WDF_DEVICE_SELF_MANAGED_IO_CLEANUP       NimbusFilter_EvtDeviceSelfManagedIoCleanup;
 EVT_WDF_OBJECT_CONTEXT_CLEANUP               NimbusFilter_EvtDeviceContextCleanup;
 EVT_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL  NimbusFilter_EvtIoInternalDeviceControl;
 
@@ -76,6 +77,11 @@ EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL           NimbusControl_EvtIoDeviceControl;
 EVT_WDF_IO_QUEUE_IO_READ                     NimbusControl_EvtIoRead;
 EVT_WDF_FILE_CLEANUP                         NimbusControl_EvtFileCleanup;
 EVT_WDF_TIMER                                NimbusControl_EvtWatchdog;
+
+VOID
+NimbusFilter_Detach(
+    _In_ WDFDEVICE Device
+    );
 
 VOID
 NimbusFilter_DispatchPassThrough(
