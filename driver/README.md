@@ -51,6 +51,12 @@ driver\enable-testsigning.ps1   # once; then reboot
 driver\install-dev.ps1          # copies the .sys, creates the service, adds the class UpperFilters, restarts the mice
 ```
 
+`install-dev.ps1` inserts `nimbus_moufilter` **in front of** `mouclass` in the
+mouse class `UpperFilters` list. Filters attach in list order, first listed
+closest to the function driver, so this puts the filter between `mouhid` and
+`mouclass`, which is where it has to be to receive `IOCTL_INTERNAL_MOUSE_CONNECT`.
+On a stock machine the list reads `nimbus_moufilter, mouclass` afterwards.
+
 Then, from the repo root:
 
 ```powershell
@@ -71,7 +77,22 @@ attestation-signed build.
 - Isolation is cleared when the client's handle closes (crash, kill, exit).
 - A watchdog clears isolation if no read is pending for 2 s while isolating.
 - The keyboard is never filtered, so `Ctrl+Alt+F12` (handled in
-  `src/mouse_hider.py`) and `Ctrl+Alt+Del` always work.
-- If the driver fails to load, the mouse keeps working: a class upper filter
-  that does not start does not stop `mouclass` (the service uses
-  `ErrorControl = SERVICE_ERROR_IGNORE`).
+  `src/mouse_hider.py`) and `Ctrl+Alt+Del` always work, and every recovery
+  below can be done from the keyboard.
+- A class upper filter is **mandatory once listed**: if the driver fails to
+  load, Windows does not start the mouse devices (Device Manager Code 39 or
+  Code 19) until the `UpperFilters` entry is removed. `install-dev.ps1`
+  therefore creates a restore point first, verifies after attaching, and
+  rolls the registry entry back automatically if the driver is not running
+  or any mouse reports a problem.
+
+## If it gets stuck
+
+| Symptom | What happened | Recovery |
+|---|---|---|
+| Mouse dead right after `install-dev.ps1`, script reported a rollback | Driver did not load (signature, test signing, or a load-time bug) | Nothing to do; the rollback already removed the entry. Replug the mouse if it has not come back. Read the reason the script printed. |
+| Mouse dead, no rollback (script interrupted, or `-NoRollback`) | `UpperFilters` still names a driver that will not start | Keyboard: `Win+X`, `A` for an elevated PowerShell, run `driver\uninstall-dev.ps1`, replug the mouse. Or in `regedit`, under `HKLM\SYSTEM\CurrentControlSet\Control\Class\{4D36E96F-E325-11CE-BFC1-08002BE10318}`, edit `UpperFilters` so it reads only `mouclass` (the list normally holds `nimbus_moufilter` above `mouclass`; **`mouclass` must stay**, it is the mouse class driver itself). |
+| Blue screen when a mouse starts (possibly at every boot) | A bug in the filter | Windows opens the recovery environment after two failed boots (or hold Shift while clicking Restart). Troubleshoot, Advanced options, System Restore, pick the "Before Nimbus Mouse Filter dev install" point. Alternative from the recovery Command Prompt: `reg load HKLM\sys C:\Windows\System32\config\SYSTEM`, then `reg add "HKLM\sys\ControlSet001\Control\Class\{4D36E96F-E325-11CE-BFC1-08002BE10318}" /v UpperFilters /t REG_MULTI_SZ /d mouclass /f`, then `reg unload HKLM\sys`. Never delete the value outright: `mouclass` has to remain in it. |
+| Cursor frozen while Nimbus is running | Isolation is on and the client is alive | Expected while Full Game Mode isolates. `Ctrl+Alt+F12`, or close Nimbus. The watchdog releases within 2 s if Nimbus stops reading; closing the handle releases immediately. |
+| Cursor frozen and Nimbus is gone | Should not happen (handle cleanup clears isolation) | Replug the mouse (a fresh device instance), or reboot; the flag does not survive a driver reload. Then file the bug with the output of `--status`. |
+| "Test Mode" watermark, anti-cheat games refuse to start | Test signing is on | `bcdedit /set testsigning off` from an elevated prompt, reboot. Do this before playing EAC/BattlEye/Vanguard titles; the unsigned dev driver cannot load without it. |

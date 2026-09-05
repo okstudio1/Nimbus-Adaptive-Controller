@@ -48,8 +48,9 @@ Internally it opens the control device, pends reads on a thread, converts `MOUSE
 ### 2.3 What changes for the user
 
 - One extra driver in the installer, alongside ViGEmBus. Class filters need the mouse devices restarted once (the installer can do that with `pnputil /restart-device`, no reboot).
+- Registration detail that is easy to get wrong: on HID-mouse machines the mouse class `UpperFilters` value already contains `mouclass` (mouhid is the function driver; mouclass rides above it as a class filter). Filters attach in list order, first listed closest to the function driver, so `nimbus_moufilter` must be inserted **before** `mouclass` to sit between mouhid and mouclass and receive `IOCTL_INTERNAL_MOUSE_CONNECT`. And `mouclass` must never be removed from that list; the dev scripts refuse to write a list without it.
 - "Isolate Mouse" becomes available in the View menu and is on by default in Full Game Mode, as on Linux.
-- Failure mode to design for: if Nimbus dies while isolated, the mouse comes back within a frame (handle cleanup). If the driver itself fails to load, Windows leaves the mouse working because a class upper filter that fails to load does not stop `mouclass`; the installer must still verify the load and tell the user.
+- Failure modes to design for: if Nimbus dies while isolated, the mouse comes back within a frame (handle cleanup). If the driver itself fails to load, the mouse devices do **not** start, because a class upper filter is mandatory once it is listed in `UpperFilters` (Device Manager Code 39/19; this is the "keyboard and mouse unusable after restart" failure other filter projects warn about). The installer must therefore register the filter, restart the mice, verify the driver is running and every mouse is healthy, and roll the registry entry back automatically if not, with a restore point taken first. The keyboard is never filtered, so manual recovery is always possible from the keyboard; `driver/README.md` lists the recovery steps.
 
 ## 3. Signing and the 2026 policy change
 

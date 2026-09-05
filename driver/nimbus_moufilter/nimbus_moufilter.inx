@@ -46,7 +46,7 @@ nimbus_moufilter.sys
 DisplayName   = %ServiceDesc%
 ServiceType   = 1      ; SERVICE_KERNEL_DRIVER
 StartType     = 3      ; SERVICE_DEMAND_START (loaded by PnP as a class filter)
-ErrorControl  = 0      ; SERVICE_ERROR_IGNORE (a failed filter must not stop mouclass)
+ErrorControl  = 0      ; SERVICE_ERROR_IGNORE (boot-time service start policy only; a listed class filter that fails to load still stops the mouse devices)
 ServiceBinary = %13%\nimbus_moufilter.sys
 
 [DefaultInstall.NT$ARCH$.Wdf]

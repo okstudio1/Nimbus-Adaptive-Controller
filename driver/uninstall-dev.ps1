@@ -20,13 +20,10 @@ if (-not $isAdmin) { throw 'Run this from an elevated PowerShell.' }
 $current = (Get-ItemProperty -Path $classKey -Name UpperFilters -ErrorAction SilentlyContinue).UpperFilters
 if ($current -and ($current -contains $service)) {
     $remaining = @($current | Where-Object { $_ -ne $service })
-    if ($remaining.Count -gt 0) {
-        Write-Host "Setting mouse class UpperFilters = $($remaining -join ', ')"
-        Set-ItemProperty -Path $classKey -Name UpperFilters -Value ([string[]]$remaining) -Type MultiString
-    } else {
-        Write-Host 'Removing the mouse class UpperFilters value'
-        Remove-ItemProperty -Path $classKey -Name UpperFilters
-    }
+    # mouclass itself is normally in this list; it must stay, and the value is never deleted.
+    if ($remaining -notcontains 'mouclass') { $remaining = @('mouclass') + $remaining }
+    Write-Host "Setting mouse class UpperFilters = $($remaining -join ', ')"
+    Set-ItemProperty -Path $classKey -Name UpperFilters -Value ([string[]]$remaining) -Type MultiString
 } else {
     Write-Host "UpperFilters does not contain $service"
 }
