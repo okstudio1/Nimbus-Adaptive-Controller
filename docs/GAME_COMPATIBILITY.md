@@ -102,7 +102,7 @@ Some features work, with limitations.
 
 | Game | Input Method | Notes |
 |---|---|---|
-| **Elden Ring** | ClipCursor + Raw Input | Use controller mode (ViGEm) — mouse camera won't work. Set to windowed in settings. **Measured on Windows 2026-09-05 (v1.17, EAC online):** with a `WH_MOUSE_LL` hook dropping 100% of mouse events the camera still turned (1,759 changed frame samples vs 1,781 unhooked, noise floor 433). Making a Nimbus-like window the foreground window stopped the mouse (312) but the game then ignored the ViGEm pad too (65 vs 12,412 when focused), so the focus trick is not a workaround. Needs the kernel filter in [Windows Mouse Filter Plan](vision/WINDOWS_MOUSE_FILTER_PLAN.md). Fully compatible on Linux. |
+| **Elden Ring** | ClipCursor + Raw Input | Use controller mode (ViGEm); the mouse camera won't work. Set to windowed in settings. **Measured on Windows 2026-09-05 (v1.17, EAC online):** with a `WH_MOUSE_LL` hook dropping 100% of mouse events the camera still turned (1,759 changed frame samples vs 1,781 unhooked, noise floor 433). Making a Nimbus-like window the foreground window stopped the mouse (312) but the game then ignored the ViGEm pad too (65 vs 12,412 when focused), so the focus trick is not a workaround. Needs the kernel filter in [Windows Mouse Filter Plan](vision/WINDOWS_MOUSE_FILTER_PLAN.md). Fully compatible on Linux. |
 | **Dark Souls III** | ClipCursor + Raw Input | Similar to Elden Ring — use controller mode. Set to windowed in settings first. |
 
 ## Incompatible Games
