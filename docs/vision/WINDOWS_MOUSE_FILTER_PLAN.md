@@ -45,7 +45,7 @@ Internally it opens the control device, pends reads on a thread, converts `MOUSE
 
 Two things to get right in that merge:
 
-- `MOUSE_ISOLATION_AVAILABLE` in the Windows module is True only when the driver's control device opened at import time, so a Windows machine without the driver keeps today's `mouse_hider` Game Mode. The Linux flag is platform-only; do not "simplify" the Windows one back to that, or Game Mode would skip `mouse_hider` on every Windows machine.
+- `MOUSE_ISOLATION_AVAILABLE` in the Windows module is True only when the driver's control device existed at import time (held by another process still counts as installed), so a Windows machine without the driver keeps today's `mouse_hider` Game Mode. The Linux flag is platform-only; do not "simplify" the Windows one back to that, or Game Mode would skip `mouse_hider` on every Windows machine.
 - In the Linux branch's `startFullGameMode`, the `mouse_hider` step is an `elif` on the isolation step. On Windows both should run: isolation takes the packets away, and `mouse_hider` still owns the `ClipCursor` release and the `Ctrl+Alt+F12` hotkey. Make them independent `if`s.
 
 `window_utils.py` (WS_EX_NOACTIVATE) stays exactly as it is. The game keeps the foreground, which is the whole point: the pad keeps working and the mouse is gone.
@@ -76,11 +76,21 @@ Two things to get right in that merge:
 
 ## 5. Test plan
 
-1. `tests/probe_mouse_filter_windows.py` (unattended): status readable, start/stop lifecycle, handle-drop release, watchdog release, exclusive open. Safe over a remote session; the mouse is isolated for a few seconds at a time with nobody moving it.
-2. `tests/probe_mouse_filter_windows.py --attended`: three timed phases with a hand on the physical mouse. Pass-through: the fake game receives `WM_INPUT`. Isolated: the game receives nothing and the driver captures the motion. Released: the game receives it again. **This needs a physical mouse or a HID mouse emulator.** `SendInput` enters above the filter and will still reach the game, which is correct behaviour but makes injected motion useless here.
+1. `tests/probe_mouse_filter_windows.py` (unattended): status readable, start/stop lifecycle, handle-drop release, watchdog release, exclusive open. Safe over a remote session; the mouse is isolated for a few seconds at a time with nobody moving it. **Passed 2026-09-05**, six checks including the interface v2 read that fails with `ERROR_NOT_READY` after a watchdog release.
+2. `tests/probe_mouse_filter_windows.py --attended`: three timed phases with a hand on the physical mouse. Pass-through: the fake game receives `WM_INPUT`. Isolated: the game receives nothing and the driver captures the motion. Released: the game receives it again. **This needs a physical mouse or a HID mouse emulator.** `SendInput` enters above the filter and will still reach the game, which is correct behaviour but makes injected motion useless here. **Passed 2026-09-05** with a caregiver at the Logitech mouse, 8 s per phase:
+
+   | Phase | Fake game `WM_INPUT` (px) | Driver passed | Driver captured | Client received |
+   |---|---|---|---|---|
+   | pass-through | 35,550 | 1,015 packets | 0 | 0 |
+   | isolated | **0** | 0 | **1,017 packets** | 103,653 px in 1,007 reads |
+   | released | 54,163 | 1,012 packets | 0 | 0 |
+
+   No packets dropped; the desktop cursor froze during the isolated phase and moved normally afterwards.
 3. `tests/probe_game_mouselook_windows.py` against a Raw Input game with the filter on, game foreground, physical sweep: `STILL`; pad: `MOVED`; after release: `MOVED`. Same pass rule as the Linux probe (`hi = max(3*noise, 150)`, `lo = max(2*noise, 60)`).
-4. Kill Nimbus while isolated: mouse returns within one second. Pull the mouse's USB cable while isolated and plug it back: no BSOD, mouse works.
-5. Reboot with the driver installed and Nimbus not running: nothing observable.
+4. Kill Nimbus while isolated: mouse returns within one second (the handle-drop check in item 1 covers the mechanism; passed). Pull the mouse's USB cable while isolated and plug it back: no BSOD, mouse works (not yet tried).
+5. Reboot with the driver installed and Nimbus not running: nothing observable (pending the next reboot).
+
+**Remote control injects above the filter.** TeamViewer delivers the remote pointer through `SendInput`, so it never touches `mouclass` and the filter neither sees nor blocks it (measured: 72 `WM_MOUSEMOVE` at the game, 0 packets at the driver). The same holds for any tool that injects input in user mode. Hands-on tests need someone at the physical mouse, which is why the attended probe prompts with dialogs.
 
 **Test signing blocks anti-cheat.** EasyAntiCheat, BattlEye and Vanguard refuse to start while `testsigning` is on, so item 3 cannot use Elden Ring on the dev machine. Run it against a non-anti-cheat Raw Input game under test signing, and repeat it with Elden Ring only once the driver is attestation-signed (or on a second machine that loads the signed build).
 
@@ -97,7 +107,7 @@ Two things to get right in that merge:
      The 32-bit `MSBuild.exe` resolves the kit on its own but then fails to load `InfVerif.dll`, so INF verification silently does not run there.
 
    Still to do for this step: enable test signing (`bcdedit /set testsigning on`, needs the Admin account and a reboot) and load the sample once to prove the install path.
-2. **Written 2026-09-05, not yet loaded.** `driver/nimbus_moufilter/` holds the filter (control device, `IOCTL_NIMBUS_SET_ISOLATION`, `IOCTL_NIMBUS_GET_STATUS`, inverted-call reads through `ReadFile`, a 1024-packet ring, handle-cleanup and watchdog release), `src/mouse_isolation_win.py` is the client with the Linux class API, and `driver/build.ps1`, `enable-testsigning.ps1`, `install-dev.ps1`, `uninstall-dev.ps1` cover the dev loop. It builds, test-signs and passes InfVerif. The INF installs only the service; the class `UpperFilters` entry is added by `install-dev.ps1` because a primitive INF may not write outside `HKR` (InfVerif 1321). Review fixes the same day (interface v2): reads fail with `STATUS_DEVICE_NOT_READY` while isolation is off so the client sees a watchdog release; the client reads status through its own handle (the device is exclusive), maps `ERROR_ACCESS_DENIED` on a second open, handles absolute-motion packets, and reports the driver as available only when the device opens; `install-dev.ps1` detaches a loaded build before replacing the file. Still to do: enable test signing, reboot, install, and pass test-plan items 1, 2 and 4 with the real mouse.
+2. **Written 2026-09-05, not yet loaded.** `driver/nimbus_moufilter/` holds the filter (control device, `IOCTL_NIMBUS_SET_ISOLATION`, `IOCTL_NIMBUS_GET_STATUS`, inverted-call reads through `ReadFile`, a 1024-packet ring, handle-cleanup and watchdog release), `src/mouse_isolation_win.py` is the client with the Linux class API, and `driver/build.ps1`, `enable-testsigning.ps1`, `install-dev.ps1`, `uninstall-dev.ps1` cover the dev loop. It builds, test-signs and passes InfVerif. The INF installs only the service; the class `UpperFilters` entry is added by `install-dev.ps1` because a primitive INF may not write outside `HKR` (InfVerif 1321). Review fixes the same day (interface v2): reads fail with `STATUS_DEVICE_NOT_READY` while isolation is off so the client sees a watchdog release; the client reads status through its own handle (the device is exclusive), maps `ERROR_ACCESS_DENIED` on a second open, handles absolute-motion packets, and reports the driver as available only when the device opens; `install-dev.ps1` detaches a loaded build before replacing the file. **Loaded and validated the same day** after the test-signing reboot: `install-dev.ps1` attached the filter (`UpperFilters = nimbus_moufilter, mouclass`, driver Running, mouse OK) and the probe passed 9/9, see section 5. Still to do: item 3 of the test plan against a game, the cable-pull half of item 4, and item 5.
 3. Merge or rebase onto `linux-uinput-support` so the bridge's isolation plumbing is shared, then wire the Windows module in and pass item 2 against Elden Ring.
 4. Partner Center registration, attestation signing, installer changes, item 4.
 5. Disclosure: publish the driver's name and purpose, and open the anti-cheat conversation described in the parent doc before the first release that ships it.

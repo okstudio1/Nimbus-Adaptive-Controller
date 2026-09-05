@@ -8,14 +8,18 @@ and delivers them to Nimbus instead, which drives its virtual stick and its own
 on-screen cursor.
 
 This is the Windows equivalent of the one-line `EVIOCGRAB` grab that
-`src/mouse_isolation.py` uses on Linux. The reason it has to be a kernel driver,
+`src/mouse_isolation.py` uses on Linux (on the `linux-uinput-support` branch,
+not yet merged). The reason it has to be a kernel driver,
 and the measurements behind it, are in
 [docs/vision/HOST_MODE_ISOLATION.md](../docs/vision/HOST_MODE_ISOLATION.md)
 (sections 8 and 9). The design is in
 [docs/vision/WINDOWS_MOUSE_FILTER_PLAN.md](../docs/vision/WINDOWS_MOUSE_FILTER_PLAN.md).
 
-**Status:** builds and test-signs. Not yet loaded or validated on hardware, and
-not yet attestation-signed. Do not ship it yet.
+**Status:** dev build loaded and validated on hardware on 2026-09-05 (Windows 11
+25H2, Logitech USB mouse): the attended probe passed 9/9, with the fake Raw Input
+game receiving zero `WM_INPUT` while the driver captured 1,017 packets and none
+were dropped. Not attestation-signed, not validated against an anti-cheat game,
+not in any release. Do not ship it yet.
 
 ## Layout
 
@@ -29,6 +33,7 @@ not yet attestation-signed. Do not ship it yet.
 | `build.ps1` | Build and collect outputs into `out/`. |
 | `enable-testsigning.ps1` | Install the test cert and turn on test signing (elevated, one reboot). |
 | `install-dev.ps1` / `uninstall-dev.ps1` | Register/unregister the class filter for development (elevated). `install-dev.ps1` also updates a loaded build: it detaches the filter, replaces the file, and re-attaches. |
+| `pnp-common.ps1` | Shared by the two scripts above: `Restart-Mice`, which restarts every mouse with `pnputil /restart-device` so the filter attaches or detaches without a reboot. |
 
 ## Build
 
@@ -51,6 +56,14 @@ driver\enable-testsigning.ps1   # once; then reboot
 driver\install-dev.ps1          # copies the .sys, creates the service, adds the class UpperFilters, restarts the mice
 ```
 
+The reboot is not optional: `bcdedit` stores the setting for the *next* boot,
+and a self-signed driver attached before that reboot fails to load with
+`0xC0000428` (Code Integrity event 3004, "invalid root certificate"), which the
+script's rollback then undoes. After the reboot the desktop shows a "Test Mode"
+watermark, and `install-dev.ps1` prints the running boot's Code Integrity
+options (bit `0x2` is test signing) and refuses to attach the filter unless it
+is set or the driver is Microsoft-signed.
+
 Run `install-dev.ps1` again after every rebuild. If the previous build is
 loaded it detaches it first (the mice restart twice), because a loaded driver
 holds its `.sys` open and the copy would otherwise fail.
@@ -68,7 +81,11 @@ venv\Scripts\python -m src.mouse_isolation_win --status      # driver reachable?
 venv\Scripts\python -m src.mouse_isolation_win --grab 5       # isolate for 5 s (the desktop cursor should freeze)
 ```
 
-Remove it with `driver\uninstall-dev.ps1`.
+Remove it with `driver\uninstall-dev.ps1`. Do not also install the INF with
+`pnputil /add-driver`: that points the service at a Driver Store copy that
+`install-dev.ps1` does not update, so rebuilds would keep loading the old
+driver. `install-dev.ps1` refuses to continue if it finds such a service, and
+`uninstall-dev.ps1` removes the Driver Store package.
 
 **While test signing is on, anti-cheat games (EasyAntiCheat, BattlEye, Vanguard)
 refuse to start.** Validate the filter against the fake-game probe and a
@@ -81,9 +98,17 @@ attestation-signed build.
   with `ERROR_ACCESS_DENIED`.
 - Isolation is cleared when the client's handle closes (crash, kill, exit).
 - A watchdog clears isolation if no read is pending for 2 s while isolating.
-  Once isolation is off, every read fails with `ERROR_NOT_READY`, so the
-  client notices a watchdog release at its next read and reports the stop
-  instead of driving a dead software cursor.
+  It runs only while isolating. Once isolation is off, every read fails with
+  `ERROR_NOT_READY`, so the client notices a watchdog release at its next read
+  and reports the stop instead of driving a dead software cursor. Every
+  release path (IOCTL, handle cleanup, watchdog) drains reads that were
+  already parked, so a read cannot outlive a release.
+- Coverage: the filter sees every pointer that reports through `mouclass`
+  (USB, Bluetooth and PS/2 mice, touchpads in legacy mouse mode). Precision
+  Touchpads report through the HID digitizer path straight to `win32k` and
+  are expected to bypass it (not yet measured on hardware). `--status` shows
+  `connected_mice`, and `MouseIsolation.start()` refuses to report success
+  when it is 0, since the real cursor would keep moving with nothing captured.
 - The keyboard is never filtered, so `Ctrl+Alt+Del` always works and every
   recovery below can be done from the keyboard. There is no release hotkey
   yet: the `Ctrl+Alt+F12` listener in `src/mouse_hider.py` only runs during

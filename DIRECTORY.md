@@ -39,7 +39,7 @@ Python backend — Qt/QML bridge, configuration, hardware interfaces.
 | `borderless.py` | Borderless window mode + ClipCursor release (Windows) |
 | `mouse_hider.py` | Controller Mode Enforcement — keep-alive pulse + mouse hook (Windows) |
 | `window_utils.py` | Game Focus Mode — save/restore foreground window (Windows) |
-| `mouse_isolation_win.py` | Mouse isolation client for the Nimbus Mouse Filter kernel driver (Windows); same class API as the Linux `mouse_isolation.py` |
+| `mouse_isolation_win.py` | Mouse isolation client for the Nimbus Mouse Filter kernel driver (Windows); same class API as the Linux `mouse_isolation.py` on the `linux-uinput-support` branch. Not wired into the bridge yet |
 | `telemetry.py` | Opt-in anonymous analytics + crash reporting (local buffer, batch flush) |
 | `cloud_client.py` | User accounts (Email/Google/Facebook OAuth), token management, profile sync |
 | `updater.py` | Lightweight auto-update checker with version manifest and update channels |

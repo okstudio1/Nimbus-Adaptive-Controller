@@ -1,10 +1,12 @@
 """
 Windows mouse isolation: talk to the Nimbus Mouse Filter kernel driver.
 
-This is the Windows counterpart of :mod:`src.mouse_isolation` (the Linux
-``EVIOCGRAB`` implementation), and it presents the **same** ``MouseIsolation``
-class so :mod:`src.bridge` can use either behind the ``MOUSE_ISOLATION_AVAILABLE``
-flag. Where Linux grabs the evdev node directly, here the kernel filter
+This is the Windows counterpart of the Linux ``EVIOCGRAB`` module
+(``src/mouse_isolation.py`` on the ``linux-uinput-support`` branch, not yet
+merged into ``main``), and it presents the **same** ``MouseIsolation`` class so
+that, once that branch lands, :mod:`src.bridge` can use either behind a
+``MOUSE_ISOLATION_AVAILABLE`` flag. Nothing on ``main`` imports this module
+yet. Where Linux grabs the evdev node directly, here the kernel filter
 (``driver/nimbus_moufilter``) withholds physical mouse packets from ``mouclass``
 and hands them to this process through ``\\\\.\\NimbusMouseFilter``.
 
@@ -13,16 +15,27 @@ Raw Input, and every application, including a game), so the bridge draws its own
 cursor and synthesises Qt events from the deltas delivered here, exactly as on
 Linux (see the F4 note in ``docs/vision/LINUX_PROBE_PLAN.md``).
 
-Button codes reported to ``on_button`` match the Linux evdev codes
-(``BTN_LEFT`` = 0x110, ...) so ``bridge._ISO_BUTTON_MAP`` is shared unchanged.
+Button codes reported to ``on_button`` are the Linux evdev codes
+(``BTN_LEFT`` = 0x110, ...) so the bridge's button map from the Linux branch
+applies unchanged.
+
+What the filter covers
+----------------------
+Every pointer that reports through ``mouclass``: USB and Bluetooth mice, PS/2,
+and HID touchpads in legacy mouse mode. Precision Touchpads report through the
+HID digitizer path straight to ``win32k`` and are expected to bypass the filter
+(not yet measured on hardware). The driver's ``connected_mice`` counter says how
+many devices it is attached to, and :meth:`MouseIsolation.start` refuses to
+report success when that count is zero.
 
 Availability
 ------------
 ``MOUSE_ISOLATION_AVAILABLE`` is True only when this is Windows **and** the
-driver's control device could be opened when this module was imported. A
-Windows machine without the driver therefore looks to the bridge exactly like a
-Linux machine without evdev access, and the existing ``mouse_hider`` path stays
-in charge of Game Mode. After installing the driver, restart Nimbus.
+driver's control device existed when this module was imported (it may have
+been held by another process at that moment; that still counts as installed).
+A Windows machine without the driver therefore looks to the bridge exactly like
+a Linux machine without evdev access, and the existing ``mouse_hider`` path
+stays in charge of Game Mode. After installing the driver, restart Nimbus.
 :meth:`MouseIsolation.start` does not depend on the import-time result: it
 opens the device again and raises ``RuntimeError`` with a specific message if
 the driver is missing or another process holds it.
@@ -95,7 +108,7 @@ MOUSE_BUTTON_5_UP = 0x0200
 MOUSE_WHEEL = 0x0400
 MOUSE_HWHEEL = 0x0800
 
-# evdev button codes, matching src/mouse_isolation.py and bridge._ISO_BUTTON_MAP
+# evdev button codes, matching the Linux module on the linux-uinput-support branch
 BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, BTN_SIDE, BTN_EXTRA = 0x110, 0x111, 0x112, 0x113, 0x114
 
 _BUTTON_EDGES = (
@@ -160,47 +173,110 @@ if _IS_WINDOWS:
     _u32.GetSystemMetrics.restype = ctypes.c_int
 
 
+class DriverMissingError(RuntimeError):
+    """The control device does not exist: driver not installed or not started."""
+
+
+class DriverBusyError(RuntimeError):
+    """Another handle holds the exclusive control device."""
+
+
 def _open_device() -> int:
+    """Open the control device for overlapped I/O. Raises ``RuntimeError``."""
+    if not _IS_WINDOWS:
+        raise RuntimeError("mouse isolation is Windows-only in this module")
     handle = _k32.CreateFileW(DEVICE_PATH, GENERIC_READ | GENERIC_WRITE,
                               FILE_SHARE_READ | FILE_SHARE_WRITE, None,
                               OPEN_EXISTING, FILE_FLAG_OVERLAPPED, None)
     if handle == INVALID_HANDLE_VALUE or handle is None:
         err = ctypes.get_last_error()
         if err in (ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND):
-            raise RuntimeError("Nimbus Mouse Filter driver is not installed or not started "
-                               "(run driver/install-dev.ps1 from an elevated prompt)")
+            raise DriverMissingError("Nimbus Mouse Filter driver is not installed or not started "
+                                     "(run driver/install-dev.ps1 from an elevated prompt)")
         if err in (ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION):
             # The control device is exclusive (WdfDeviceInitSetExclusive). A
             # second open is refused with STATUS_ACCESS_DENIED, which Win32
             # reports as ERROR_ACCESS_DENIED, not ERROR_SHARING_VIOLATION.
-            raise RuntimeError("another process already holds the Nimbus Mouse Filter open "
-                               "(the device is exclusive), or this account may not open it")
+            raise DriverBusyError("another process already holds the Nimbus Mouse Filter open "
+                                  "(the device is exclusive), or this account may not open it")
         raise RuntimeError(f"could not open {DEVICE_PATH}: Windows error {err}")
     return handle
+
+
+def _ioctl(handle: int, code: int, name: str, in_buf: Any = None, out_buf: Any = None) -> int:
+    """``DeviceIoControl`` on the control handle; returns the byte count returned.
+
+    The handle is opened with ``FILE_FLAG_OVERLAPPED`` and the reader thread
+    keeps a ``ReadFile`` pending on it, so every control call carries its own
+    ``OVERLAPPED`` and event. Passing ``NULL`` there is undefined on an
+    overlapped handle and only worked because the driver completes these
+    IOCTLs inline.
+    """
+    event = _k32.CreateEventW(None, True, False, None)
+    if not event:
+        raise RuntimeError(f"CreateEvent failed: Windows error {ctypes.get_last_error()}")
+    try:
+        ov = _OVERLAPPED()
+        ov.hEvent = event
+        returned = wintypes.DWORD(0)
+        ok = _k32.DeviceIoControl(handle, code,
+                                  ctypes.byref(in_buf) if in_buf is not None else None,
+                                  ctypes.sizeof(in_buf) if in_buf is not None else 0,
+                                  out_buf, ctypes.sizeof(out_buf) if out_buf is not None else 0,
+                                  ctypes.byref(returned), ctypes.byref(ov))
+        if not ok:
+            err = ctypes.get_last_error()
+            if err != ERROR_IO_PENDING:
+                raise RuntimeError(f"{name} failed: Windows error {err}")
+            if not _k32.GetOverlappedResult(handle, ctypes.byref(ov), ctypes.byref(returned), True):
+                raise RuntimeError(f"{name} failed: Windows error {ctypes.get_last_error()}")
+        return returned.value
+    finally:
+        _k32.CloseHandle(event)
+
+
+def _set_isolation(handle: int, enable: bool) -> None:
+    """Issue ``IOCTL_NIMBUS_SET_ISOLATION`` on an already open handle."""
+    _ioctl(handle, IOCTL_NIMBUS_SET_ISOLATION, "IOCTL_NIMBUS_SET_ISOLATION",
+           in_buf=wintypes.DWORD(1 if enable else 0))
 
 
 def _query_status(handle: int) -> Dict[str, int]:
     """Issue ``IOCTL_NIMBUS_GET_STATUS`` on an already open handle."""
     buf = ctypes.create_string_buffer(_STATUS_STRUCT.size)
-    returned = wintypes.DWORD(0)
-    ok = _k32.DeviceIoControl(handle, IOCTL_NIMBUS_GET_STATUS, None, 0,
-                              buf, ctypes.sizeof(buf), ctypes.byref(returned), None)
-    if not ok:
-        raise RuntimeError(f"IOCTL_NIMBUS_GET_STATUS failed: Windows error {ctypes.get_last_error()}")
-    if returned.value < _STATUS_STRUCT.size:
-        raise RuntimeError(f"IOCTL_NIMBUS_GET_STATUS returned {returned.value} bytes, "
+    returned = _ioctl(handle, IOCTL_NIMBUS_GET_STATUS, "IOCTL_NIMBUS_GET_STATUS", out_buf=buf)
+    if returned < _STATUS_STRUCT.size:
+        raise RuntimeError(f"IOCTL_NIMBUS_GET_STATUS returned {returned} bytes, "
                            f"expected {_STATUS_STRUCT.size}")
     return dict(zip(_STATUS_FIELDS, _STATUS_STRUCT.unpack(buf.raw)))
 
 
-def get_status() -> Dict[str, int]:
-    """Open the control device, read its status struct, and close it.
+# Instances that currently hold the device (see the safety net at the bottom).
+_instances: List["MouseIsolation"] = []
+_instances_lock = threading.Lock()
 
-    The device is exclusive, so this fails while any process (this one
-    included) holds it open. For a live instance use
-    :meth:`MouseIsolation.status`, which asks through the instance's own
-    handle. Raises ``RuntimeError`` if the driver is not reachable.
+
+def _active_instance() -> Optional["MouseIsolation"]:
+    """The instance in this process that currently holds the device, if any."""
+    with _instances_lock:
+        for inst in _instances:
+            if inst.active:
+                return inst
+    return None
+
+
+def get_status() -> Dict[str, int]:
+    """Read the driver's status struct.
+
+    While an instance in this process is isolating, the exclusive device
+    cannot be opened a second time, so the answer comes through that
+    instance's own handle (:meth:`MouseIsolation.status`). Otherwise the
+    device is opened, read, and closed. Raises ``RuntimeError`` if the driver
+    is not reachable, including when another process holds it.
     """
+    inst = _active_instance()
+    if inst is not None:
+        return inst.status()
     handle = _open_device()
     try:
         return _query_status(handle)
@@ -209,11 +285,20 @@ def get_status() -> Dict[str, int]:
 
 
 def is_available() -> bool:
-    """True if the driver's control device can be opened right now."""
+    """True if the driver's control device exists, whether or not it is free.
+
+    A device held by another process, or by this process's own active
+    instance, still counts as installed; :meth:`MouseIsolation.start` reports
+    the busy case with its own message.
+    """
     if not _IS_WINDOWS:
         return False
+    if _active_instance() is not None:
+        return True
     try:
         handle = _open_device()
+    except DriverBusyError:
+        return True
     except RuntimeError:
         return False
     _k32.CloseHandle(handle)
@@ -234,8 +319,10 @@ def list_pointer_devices() -> List[Dict[str, Any]]:
     """Report the driver as a single grabbable 'device', to match the Linux API.
 
     The Windows filter is class-wide, so there are no per-node choices to make.
-    Returns an empty list when the driver is unreachable, which includes the
-    time an instance in this process is isolating (exclusive device).
+    Works while an instance in this process is isolating (the status comes
+    through its handle). Returns an empty list when the driver is missing or
+    another process holds it, in which case :meth:`MouseIsolation.start` would
+    fail too.
     """
     try:
         status = get_status()
@@ -244,17 +331,18 @@ def list_pointer_devices() -> List[Dict[str, Any]]:
     return [_device_entry(status)]
 
 
-# True only when the driver answered at import time. The bridge treats this
-# the way it treats the Linux flag: False means Game Mode uses mouse_hider.
+# True only when the driver's device existed at import time. The bridge treats
+# this the way it treats the Linux flag: False means Game Mode uses mouse_hider.
 MOUSE_ISOLATION_AVAILABLE = is_available()
 
 
 class MouseIsolation:
     """Isolate the physical mouse through the Nimbus Mouse Filter driver.
 
-    Same constructor and lifecycle as :class:`src.mouse_isolation.MouseIsolation`
-    on Linux. Callbacks run on the reader thread; marshal to the UI thread
-    before touching Qt objects (the bridge does this with queued signals).
+    Same constructor and lifecycle as the Linux ``MouseIsolation``
+    (``src/mouse_isolation.py`` on the ``linux-uinput-support`` branch).
+    Callbacks run on the reader thread; marshal to the UI thread before
+    touching Qt objects (the bridge does this with queued signals).
 
     Args:
         on_motion: ``(dx, dy)`` per input report with movement, in pixels.
@@ -297,6 +385,7 @@ class MouseIsolation:
 
     @property
     def active(self) -> bool:
+        """True between a successful :meth:`start` and the matching :meth:`stop`."""
         return self._active
 
     @property
@@ -315,23 +404,14 @@ class MouseIsolation:
                 raise RuntimeError("mouse isolation is not active")
             return _query_status(self._handle)
 
-    def _set_isolation(self, enable: bool) -> None:
-        value = wintypes.DWORD(1 if enable else 0)
-        returned = wintypes.DWORD(0)
-        ok = _k32.DeviceIoControl(self._handle, IOCTL_NIMBUS_SET_ISOLATION,
-                                  ctypes.byref(value), ctypes.sizeof(value),
-                                  None, 0, ctypes.byref(returned), None)
-        if not ok:
-            raise RuntimeError(f"IOCTL_NIMBUS_SET_ISOLATION failed: Windows error {ctypes.get_last_error()}")
-
     def start(self, nodes: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """Open the driver and turn isolation on. ``nodes`` is ignored (class-wide).
 
         Returns the grabbed 'devices'. Raises ``RuntimeError`` if the driver is
-        missing, already in use, or built against another interface version.
+        missing, already in use, built against another interface version, or
+        attached to no mouse (nothing would be captured while the real cursor
+        kept moving).
         """
-        if not _IS_WINDOWS:
-            raise RuntimeError("mouse isolation is Windows-only in this module")
         with self._lock:
             if self._active:
                 return list(self._devices)
@@ -344,18 +424,37 @@ class MouseIsolation:
                 if status["version"] != INTERFACE_VERSION:
                     raise RuntimeError(f"Nimbus Mouse Filter reports interface v{status['version']}, "
                                        f"this client needs v{INTERFACE_VERSION}; rebuild and reinstall the driver")
-                self._set_isolation(True)
+                _set_isolation(self._handle, True)
+                try:
+                    # Re-read after enabling: this count is what the driver is
+                    # attached to right now. Zero means the real cursor would
+                    # keep moving (a Precision Touchpad, or a mouse that is
+                    # present but not started) while this reader saw nothing.
+                    status = _query_status(self._handle)
+                    if status["connected_mice"] == 0:
+                        raise RuntimeError("the Nimbus Mouse Filter is attached to no mouse "
+                                           "(connected_mice = 0), so nothing would be isolated; "
+                                           "plug in a mouse that reports through mouclass "
+                                           "(Precision Touchpads bypass the filter)")
+                except Exception:
+                    try:
+                        _set_isolation(self._handle, False)
+                    except Exception:
+                        pass
+                    raise
             except Exception:
                 self._close_handles()
                 raise
             self._devices = [_device_entry(status)]
             self._abs_last.clear()
             self._wheel_rem = [0, 0]
-            self._active = True
             self.stop_reason = ""
-        _register_instance(self)
-        self._thread = threading.Thread(target=self._reader, daemon=True, name="MouseIsolationWin")
-        self._thread.start()
+            # Everything below stays under the lock so a stop() from another
+            # thread cannot run between "_active" and the reader existing.
+            self._thread = threading.Thread(target=self._reader, daemon=True, name="MouseIsolationWin")
+            self._active = True
+            _register_instance(self)
+            self._thread.start()
         print("[mouse_isolation_win] isolation on (released by stop(), by closing Nimbus, "
               "or by the driver watchdog if reads stop)")
         return list(self._devices)
@@ -370,10 +469,10 @@ class MouseIsolation:
             handle = self._handle
         if handle is not None:
             try:
-                self._set_isolation(False)   # the driver fails the pending read
+                _set_isolation(handle, False)   # the driver fails the pending read
             except Exception:
                 pass
-            _k32.CancelIoEx(handle, None)    # and this covers an older driver
+            _k32.CancelIoEx(handle, None)       # and this wakes it if the IOCTL itself failed
         thread = self._thread
         if thread and thread.is_alive() and threading.current_thread() is not thread:
             thread.join(timeout=1.0)
@@ -418,14 +517,16 @@ class MouseIsolation:
                         break
                 n = returned.value
                 if n:
-                    self._dispatch(buf.raw[:n])
+                    self._dispatch(buf, n)
         except Exception as exc:
             reason = f"error: {exc}"
         if self._active:
             threading.Thread(target=self.stop, args=(reason,), daemon=True).start()
 
-    def _dispatch(self, data: bytes) -> None:
-        count = len(data) // _MOUSE_INPUT_DATA.size
+    def _dispatch(self, data: Any, length: int) -> None:
+        # ``data`` is the ctypes read buffer itself; unpacking in place avoids
+        # copying the whole 6 KB buffer for what is usually one 24-byte packet.
+        count = length // _MOUSE_INPUT_DATA.size
         for i in range(count):
             (unit, flags, button_flags, button_data, _raw,
              last_x, last_y, _extra) = _MOUSE_INPUT_DATA.unpack_from(data, i * _MOUSE_INPUT_DATA.size)
@@ -500,10 +601,8 @@ def _read_failure_reason(err: int) -> str:
     return f"read error {err}"
 
 
-# ---- process-wide safety net (mirrors src/mouse_isolation.py) -------------
-_instances: List[MouseIsolation] = []
-_instances_lock = threading.Lock()
-
+# ---- process-wide safety net (mirrors the Linux module) -------------------
+# _instances and _instances_lock are defined next to _active_instance() above.
 
 def _register_instance(inst: MouseIsolation) -> None:
     with _instances_lock:

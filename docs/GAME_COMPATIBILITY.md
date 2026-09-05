@@ -47,7 +47,7 @@ Any game that:
 - Supports XInput controllers natively (detects the virtual Xbox 360 pad)
 
 **Games that will NOT work** even with Controller Mode:
-- Games that read the mouse through Raw Input (`WM_INPUT`) with no option to turn it off. The hook is not blocked by anti-cheat; it is simply never consulted for `WM_INPUT`. Measured on Elden Ring under EAC on 2026-09-05: the hook dropped every mouse event and the camera still turned. See [Host Mode & Input Isolation, section 8](vision/HOST_MODE_ISOLATION.md#8-measured-on-windows-2026-09-05).
+- Games that read the mouse through Raw Input (`WM_INPUT`) with no option to turn it off. The `WH_MOUSE_LL` hook is never consulted for `WM_INPUT`, so it cannot block them. Measured on Elden Ring under EAC on 2026-09-05: the hook dropped every mouse event and the camera still turned, and EAC did not react to the hook in that one session. That is one data point, not a policy: other kernel anti-cheat (Vanguard in particular) was not measured and may block or flag the hook, so treat those titles as unsupported. See [Host Mode & Input Isolation, section 8](vision/HOST_MODE_ISOLATION.md#8-measured-on-windows-2026-09-05).
 
 ### How it generalizes across game engines
 

@@ -10,9 +10,12 @@
 ; make, so it is done by driver\install-dev.ps1 instead (and, for the shipped
 ; product, by the Nimbus installer). See docs/vision/WINDOWS_MOUSE_FILTER_PLAN.md.
 ;
-; Install for development:
-;     pnputil /add-driver nimbus_moufilter.inf /install
-;     (then driver\install-dev.ps1 adds the class UpperFilters entry)
+; Install for development: driver\install-dev.ps1 only. It copies the .sys to
+; System32\drivers, creates the service with sc.exe, and adds the class entry.
+; Do not also "pnputil /add-driver" this INF: that registers the service
+; against the Driver Store copy, which install-dev.ps1 does not update, so
+; rebuilds would silently keep loading the old driver. The INF is built and
+; verified here for the product installer.
 ;
 
 [Version]

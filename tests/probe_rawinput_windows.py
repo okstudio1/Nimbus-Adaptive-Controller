@@ -61,8 +61,10 @@ from typing import Any, Callable, Dict, List, Optional
 if sys.platform != "win32":
     sys.exit("Windows only")
 
-user32 = ctypes.windll.user32
-kernel32 = ctypes.windll.kernel32
+# use_last_error captures GetLastError right after each call, before Python's
+# own allocations can clobber it; read it back with ctypes.get_last_error().
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 # ---- Win32 constants ------------------------------------------------------
 WM_DESTROY = 0x0002
@@ -259,7 +261,8 @@ def register_raw_mouse(hwnd: Optional[int], flags: int) -> bool:
     rid = RAWINPUTDEVICE(HID_USAGE_PAGE_GENERIC, HID_USAGE_GENERIC_MOUSE, flags, hwnd if hwnd else None)
     ok = user32.RegisterRawInputDevices(ctypes.byref(rid), 1, ctypes.sizeof(RAWINPUTDEVICE))
     if not ok:
-        print(f"RegisterRawInputDevices failed: {ctypes.get_last_error()} / {kernel32.GetLastError()}")
+        err = ctypes.get_last_error()
+        print(f"RegisterRawInputDevices failed: {err}")
     return bool(ok)
 
 
@@ -350,13 +353,14 @@ def create_window(class_name: str, title: str, x: int, y: int, w: int, h: int,
     cls.hbrBackground = ctypes.cast(COLOR_WINDOW + 1, wintypes.HBRUSH)
     cls.lpszClassName = class_name
     if not user32.RegisterClassExW(ctypes.byref(cls)):
-        err = kernel32.GetLastError()
+        err = ctypes.get_last_error()
         if err != 1410:  # ERROR_CLASS_ALREADY_EXISTS
             raise OSError(f"RegisterClassExW failed: {err}")
     hwnd = user32.CreateWindowExW(ex_style, class_name, title, WS_OVERLAPPEDWINDOW | WS_VISIBLE,
                                   x, y, w, h, None, None, hinst, None)
     if not hwnd:
-        raise OSError(f"CreateWindowExW failed: {kernel32.GetLastError()}")
+        err = ctypes.get_last_error()
+        raise OSError(f"CreateWindowExW failed: {err}")
     return _hwnd_int(hwnd)
 
 
@@ -419,7 +423,8 @@ def run_game(args: argparse.Namespace) -> int:
 # ---- role: blocker --------------------------------------------------------
 def run_blocker(args: argparse.Namespace) -> int:
     ok = user32.BlockInput(True)
-    print(f"[blocker] BlockInput(TRUE) -> {bool(ok)} err={kernel32.GetLastError()}", flush=True)
+    err = ctypes.get_last_error()
+    print(f"[blocker] BlockInput(TRUE) -> {bool(ok)} err={err}", flush=True)
     try:
         time.sleep(args.seconds)
     finally:

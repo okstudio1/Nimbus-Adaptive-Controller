@@ -320,6 +320,20 @@ The compass in the saved frames swings from N toward E under the hook. So on Win
 4. **Attestation signing still works** for a new driver, and two MIT projects show the shape of it: RawAccel (a shipping signed mouclass filter that rewrites deltas at the layer Option F would drop them, and works in Raw Input games, which confirms 7.1 empirically) and OpenInputBridge (a clean-room Interception-compatible filter for Windows 11, no signed release yet).
 5. **The Linux branch's user-mode half carries over.** Once the driver delivers packets, `bridge.py`'s software cursor, synthetic Qt events, and the Isolate Mouse UI from `linux-uinput-support` are the Windows implementation too; only the source of deltas changes.
 
+### 8.4 Measured with the filter (2026-09-05, dev build under test signing)
+
+The Nimbus Mouse Filter from [WINDOWS_MOUSE_FILTER_PLAN.md](WINDOWS_MOUSE_FILTER_PLAN.md) was loaded on the same machine after the test-signing reboot and run against the fake Raw Input game with a person at the Logitech mouse (`tests/probe_mouse_filter_windows.py --attended`, 8 s per phase):
+
+| Phase | Fake game `WM_INPUT` delta | Packets the driver passed to `mouclass` | Packets the driver captured for Nimbus |
+|---|---|---|---|
+| pass-through | 35,550 | 1,015 | 0 |
+| isolated | **0** | 0 | **1,017** (103,653 px delivered to the client) |
+| released | 54,163 | 1,012 | 0 |
+
+Nothing dropped, the cursor froze during isolation and returned on release, and the six unattended safety checks (lifecycle, handle drop, watchdog, fail-fast read, exclusivity) passed first. This is the Windows counterpart of the Linux P2 result in section 5, with one gap: the game here is the probe's fake window, because Elden Ring's anti-cheat refuses to start while test signing is on. Closing that gap needs an attestation-signed build.
+
+One operational fact came out of the first attempt: motion sent through TeamViewer never reached the driver at all (72 `WM_MOUSEMOVE` at the game, 0 packets at the filter), because remote-control tools inject with `SendInput`, above `mouclass`. Hands-on validation has to happen at the physical mouse.
+
 ---
 
 ## 9. Prior art and the signing landscape, checked 2026-09-05

@@ -23,10 +23,14 @@
  * - The control device is exclusive: one client at a time.
  * - Handle cleanup (crash, kill, exit) restores pass-through.
  * - A watchdog restores pass-through if the client has no read pending for
- *   NIMBUS_MOUFILTER_WATCHDOG_MS while isolating.
+ *   NIMBUS_MOUFILTER_WATCHDOG_MS while isolating. It runs only while
+ *   isolating.
  * - Reads fail with STATUS_DEVICE_NOT_READY whenever isolation is off, so a
  *   client whose read comes back that way knows the mouse was given back
  *   instead of waiting forever for packets that will never be captured.
+ *   Every release path clears the flag under the lock and then drains the
+ *   read queue, and EvtIoRead re-checks the flag after parking a read, so a
+ *   read cannot be left parked across a release.
  * - The keyboard is never touched.
  *
  * Environment: kernel mode only.
@@ -56,20 +60,59 @@ static NIMBUS_GLOBALS g;
 /* Isolation state helpers                                                  */
 /* ------------------------------------------------------------------------ */
 
+static VOID NimbusFailPendingReads(VOID);
+
+/* Caller holds g.Lock. Pass-through from here on; nothing buffered survives. */
 static VOID
-NimbusSetIsolating(
-    _In_ BOOLEAN On
+NimbusReleaseLocked(
+    VOID
+    )
+{
+    g.Isolating = 0;
+    g.RingHead = 0;
+    g.RingCount = 0;
+}
+
+/*
+ * The one way isolation goes off. Clears the state under the lock, then fails
+ * every read that is parked in the queue, so no read outlives a release (see
+ * NimbusControl_EvtIoRead for the read that races this).
+ * Callable at IRQL <= DISPATCH_LEVEL.
+ */
+static VOID
+NimbusReleaseIsolation(
+    VOID
     )
 {
     WdfSpinLockAcquire(g.Lock);
-    g.Isolating = On ? 1 : 0;
-    if (On) {
-        g.LastReadActivity = KeQueryInterruptTime();
-    } else {
+    NimbusReleaseLocked();
+    WdfSpinLockRelease(g.Lock);
+    NimbusFailPendingReads();
+}
+
+/*
+ * Turn isolation on for the current control device. Fails when the control
+ * device is being torn down, so a client cannot leave the flag set with no
+ * queue and no watchdog behind it. The ring is emptied so a packet that raced
+ * the previous release is not replayed into this session.
+ */
+static BOOLEAN
+NimbusStartIsolating(
+    VOID
+    )
+{
+    BOOLEAN started;
+
+    WdfSpinLockAcquire(g.Lock);
+    started = (g.ReadQueue != NULL);
+    if (started) {
+        g.Isolating = 1;
         g.RingHead = 0;
         g.RingCount = 0;
+        g.LastReadActivity = KeQueryInterruptTime();
     }
     WdfSpinLockRelease(g.Lock);
+    return started;
 }
 
 /*
@@ -109,6 +152,10 @@ NimbusCompleteRead(
 /*
  * Hand queued packets to pending reads until either runs out.
  * Callable at IRQL <= DISPATCH_LEVEL.
+ *
+ * The queue handle is used outside g.Lock, so it is used under QueueRundown:
+ * NimbusControl_Delete clears g.ReadQueue and then waits for the rundown
+ * before it deletes the queue, so a handle copied out here stays valid.
  */
 static VOID
 NimbusServicePendingReads(
@@ -120,6 +167,9 @@ NimbusServicePendingReads(
     NTSTATUS status;
     BOOLEAN haveData;
 
+    if (!ExAcquireRundownProtection(&g.QueueRundown)) {
+        return;   /* the control device is going away; Delete purges the queue */
+    }
     for (;;) {
         WdfSpinLockAcquire(g.Lock);
         queue = g.ReadQueue;
@@ -127,19 +177,20 @@ NimbusServicePendingReads(
         WdfSpinLockRelease(g.Lock);
 
         if (queue == NULL || !haveData) {
-            return;
+            break;
         }
         status = WdfIoQueueRetrieveNextRequest(queue, &request);
         if (!NT_SUCCESS(status)) {
-            return;   /* nobody is waiting; packets stay in the ring */
+            break;   /* nobody is waiting; packets stay in the ring */
         }
         NimbusCompleteRead(request);
     }
+    ExReleaseRundownProtection(&g.QueueRundown);
 }
 
 /*
- * Fail every pending read: isolation has just been switched off, so no packet
- * will ever arrive for them. Callable at IRQL <= DISPATCH_LEVEL.
+ * Fail every pending read: isolation is off, so no packet will ever arrive
+ * for them. Callable at IRQL <= DISPATCH_LEVEL. Same rundown rule as above.
  */
 static VOID
 NimbusFailPendingReads(
@@ -149,20 +200,29 @@ NimbusFailPendingReads(
     WDFQUEUE queue;
     WDFREQUEST request;
 
+    if (!ExAcquireRundownProtection(&g.QueueRundown)) {
+        return;
+    }
     WdfSpinLockAcquire(g.Lock);
     queue = g.ReadQueue;
     WdfSpinLockRelease(g.Lock);
 
-    if (queue == NULL) {
-        return;
+    if (queue != NULL) {
+        while (NT_SUCCESS(WdfIoQueueRetrieveNextRequest(queue, &request))) {
+            WdfRequestCompleteWithInformation(request, STATUS_DEVICE_NOT_READY, 0);
+        }
     }
-    while (NT_SUCCESS(WdfIoQueueRetrieveNextRequest(queue, &request))) {
-        WdfRequestCompleteWithInformation(request, STATUS_DEVICE_NOT_READY, 0);
-    }
+    ExReleaseRundownProtection(&g.QueueRundown);
 }
 
-/* Queue packets for the client (drop oldest on overflow), then deliver. */
-static VOID
+/*
+ * Queue packets for the client (drop oldest on overflow), then deliver.
+ * Returns FALSE, having queued nothing, if isolation is off by the time the
+ * lock is held: the caller then passes the packets to mouclass. Deciding under
+ * the lock is what keeps a packet that races a release from being both
+ * withheld from Windows and replayed into the next session.
+ */
+static BOOLEAN
 NimbusCapturePackets(
     _In_reads_(Count) PMOUSE_INPUT_DATA Packets,
     _In_ ULONG Count
@@ -171,6 +231,10 @@ NimbusCapturePackets(
     ULONG i;
 
     WdfSpinLockAcquire(g.Lock);
+    if (g.Isolating == 0) {
+        WdfSpinLockRelease(g.Lock);
+        return FALSE;
+    }
     for (i = 0; i < Count; i++) {
         if (g.RingCount == NIMBUS_RING_CAPACITY) {
             g.RingHead = (g.RingHead + 1) % NIMBUS_RING_CAPACITY;
@@ -184,6 +248,7 @@ NimbusCapturePackets(
     WdfSpinLockRelease(g.Lock);
 
     NimbusServicePendingReads();
+    return TRUE;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -203,6 +268,7 @@ DriverEntry(
     DebugPrint(("Nimbus Mouse Filter: DriverEntry (built %s %s)\n", __DATE__, __TIME__));
 
     RtlZeroMemory(&g, sizeof(g));
+    ExInitializeRundownProtection(&g.QueueRundown);
 
     WDF_DRIVER_CONFIG_INIT(&config, NimbusFilter_EvtDeviceAdd);
 
@@ -448,8 +514,11 @@ NimbusFilter_ServiceCallback(
     ext = FilterGetData(hDevice);
     count = (ULONG)(InputDataEnd - InputDataStart);
 
-    if (g.Isolating != 0) {
-        NimbusCapturePackets(InputDataStart, count);
+    /*
+     * The unlocked read keeps the pass-through path lock-free; the decision
+     * that counts is made under the lock inside NimbusCapturePackets.
+     */
+    if (g.Isolating != 0 && NimbusCapturePackets(InputDataStart, count)) {
         *InputDataConsumed = count;
         return;
     }
@@ -544,12 +613,15 @@ NimbusControl_Create(
 
     WdfControlFinishInitializing(controlDevice);
 
+    /* A previous control device ran the rundown down; arm it for this one. */
+    ExReInitializeRundownProtection(&g.QueueRundown);
     WdfSpinLockAcquire(g.Lock);
+    NimbusReleaseLocked();   /* a new control device has no client yet */
     g.ReadQueue = ctl->ReadQueue;
     WdfSpinLockRelease(g.Lock);
     g.ControlDevice = controlDevice;
 
-    WdfTimerStart(ctl->Watchdog, WDF_REL_TIMEOUT_IN_MS(NIMBUS_WATCHDOG_PERIOD_MS));
+    /* The watchdog runs only while isolating; IOCTL_NIMBUS_SET_ISOLATION(1) starts it. */
     DebugPrint(("Nimbus Mouse Filter: control device ready\n"));
     return STATUS_SUCCESS;
 
@@ -574,15 +646,20 @@ NimbusControl_Delete(
     g.ControlDevice = NULL;
     ctl = ControlGetData(controlDevice);
 
+    /*
+     * Order matters. Clear the queue pointer under the lock so no new user
+     * picks it up, then wait for anyone who already copied it out (the packet
+     * path runs at DISPATCH_LEVEL under QueueRundown), then stop the watchdog
+     * and only then purge and delete the queue's owner.
+     */
     WdfSpinLockAcquire(g.Lock);
-    g.Isolating = 0;
+    NimbusReleaseLocked();
     g.ReadQueue = NULL;
-    g.RingHead = 0;
-    g.RingCount = 0;
     WdfSpinLockRelease(g.Lock);
+    ExWaitForRundownProtectionRelease(&g.QueueRundown);
 
     WdfTimerStop(ctl->Watchdog, TRUE);
-    WdfIoQueuePurgeSynchronously(ctl->ReadQueue);
+    WdfIoQueuePurgeSynchronously(ctl->ReadQueue);   /* parked reads complete with STATUS_CANCELLED */
     WdfObjectDelete(controlDevice);
     DebugPrint(("Nimbus Mouse Filter: control device removed\n"));
 }
@@ -613,10 +690,21 @@ NimbusControl_EvtIoDeviceControl(
         if (!NT_SUCCESS(status)) {
             break;
         }
-        NimbusSetIsolating(*enable != 0);
-        if (*enable == 0) {
-            /* The client's reader is parked in ReadFile; give it its answer. */
-            NimbusFailPendingReads();
+        if (*enable != 0) {
+            if (!NimbusStartIsolating()) {
+                status = STATUS_DEVICE_NOT_READY;   /* control device going away */
+                break;
+            }
+            /*
+             * The watchdog stops itself once it sees isolation off, under
+             * g.Lock, and NimbusStartIsolating set the flag under that same
+             * lock before this call, so this start cannot be cancelled by a
+             * stop that saw the previous session end.
+             */
+            WdfTimerStart(ctl->Watchdog, WDF_REL_TIMEOUT_IN_MS(NIMBUS_WATCHDOG_PERIOD_MS));
+        } else {
+            /* Also fails the client's parked read, which is how it gets its answer. */
+            NimbusReleaseIsolation();
         }
         WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS, 0);
         return;
@@ -675,8 +763,8 @@ NimbusControl_EvtIoRead(
         /*
          * Nothing is captured while passing through, so this read would wait
          * forever. Failing it is how the client finds out that the watchdog
-         * released isolation (ERROR_NOT_READY in user mode). The ring is
-         * always emptied when isolation goes off, so no packets are lost.
+         * released isolation (ERROR_NOT_READY in user mode). Every release
+         * empties the ring under the lock, so no packets are lost.
          */
         WdfRequestCompleteWithInformation(Request, STATUS_DEVICE_NOT_READY, 0);
         return;
@@ -693,7 +781,19 @@ NimbusControl_EvtIoRead(
         return;
     }
 
-    /* Packets may have arrived between the check and the forward. */
+    /*
+     * Isolation may have gone off, or packets may have arrived, between the
+     * check above and the forward. A release drains the queue after clearing
+     * the flag, so if the flag is off now this request was either drained by
+     * that release or is drained here. Either way no read is left parked.
+     */
+    WdfSpinLockAcquire(g.Lock);
+    isolating = (g.Isolating != 0);
+    WdfSpinLockRelease(g.Lock);
+    if (!isolating) {
+        NimbusFailPendingReads();
+        return;
+    }
     NimbusServicePendingReads();
 }
 
@@ -705,30 +805,64 @@ NimbusControl_EvtFileCleanup(
 {
     UNREFERENCED_PARAMETER(FileObject);
     PAGED_CODE();
-    NimbusSetIsolating(FALSE);
+    NimbusReleaseIsolation();
 }
 
-/* Restore pass-through if the client stops reading while isolating. */
+/*
+ * Restore pass-through if the client stops reading while isolating. Runs only
+ * while isolating: SET_ISOLATION(1) starts it and it stops itself, under the
+ * lock, the first time it sees isolation off.
+ */
 VOID
 NimbusControl_EvtWatchdog(
     IN WDFTIMER Timer
     )
 {
-    PCONTROL_EXTENSION ctl = ControlGetData(WdfTimerGetParentObject(Timer));
-    ULONGLONG now = KeQueryInterruptTime();
+    ULONGLONG now;
     ULONG queued = 0;
-
-    WdfIoQueueGetState(ctl->ReadQueue, &queued, NULL);
+    ULONG inDriver = 0;
+    BOOLEAN isolating;
+    BOOLEAN released = FALSE;
 
     WdfSpinLockAcquire(g.Lock);
-    if (g.Isolating != 0 && queued == 0 && (now - g.LastReadActivity) > NIMBUS_WATCHDOG_TIMEOUT) {
-        g.Isolating = 0;
-        g.RingHead = 0;
-        g.RingCount = 0;
+    if (g.ReadQueue == NULL) {
+        /* NimbusControl_Delete has started; it stops this timer itself. */
+        WdfSpinLockRelease(g.Lock);
+        return;
+    }
+    /*
+     * Everything is sampled under the lock so it agrees with EvtIoRead, which
+     * stamps LastReadActivity under the same lock before it forwards, and with
+     * NimbusServicePendingReads, whose retrieved-but-not-yet-completed read
+     * shows up in inDriver. A read is therefore either visible in one of the
+     * two counts or has just refreshed the timestamp.
+     */
+    WdfIoQueueGetState(g.ReadQueue, &queued, &inDriver);
+    now = KeQueryInterruptTime();
+    isolating = (g.Isolating != 0);
+    if (isolating && queued == 0 && inDriver == 0 &&
+        now > g.LastReadActivity && (now - g.LastReadActivity) > NIMBUS_WATCHDOG_TIMEOUT) {
+        NimbusReleaseLocked();
         g.WatchdogReleases++;
-        DebugPrint(("Nimbus Mouse Filter: watchdog released isolation\n"));
+        released = TRUE;
+        isolating = FALSE;
+    }
+    if (!isolating) {
+        /*
+         * Nothing left to watch. Stopping under the lock is what makes this
+         * safe against a concurrent SET_ISOLATION(1): it sets the flag under
+         * this lock and starts the timer afterwards, so its start always
+         * lands after this stop.
+         */
+        WdfTimerStop(Timer, FALSE);
     }
     WdfSpinLockRelease(g.Lock);
+
+    if (released) {
+        DebugPrint(("Nimbus Mouse Filter: watchdog released isolation\n"));
+        /* A read forwarded just before the release must not stay parked. */
+        NimbusFailPendingReads();
+    }
 }
 
 #pragma warning(pop)

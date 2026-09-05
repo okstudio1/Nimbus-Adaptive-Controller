@@ -45,7 +45,13 @@ typedef struct _CONTROL_EXTENSION {
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(CONTROL_EXTENSION, ControlGetData)
 
-/* Driver-wide state. Everything below Lock is guarded by it. */
+/*
+ * Driver-wide state. Everything below Lock is guarded by it, with two
+ * exceptions that are spelled out where they happen: the service callback
+ * reads Isolating unlocked as a hint before taking the lock to decide, and
+ * the read helpers use a ReadQueue handle outside the lock while holding
+ * QueueRundown, which NimbusControl_Delete waits on before deleting the queue.
+ */
 typedef struct _NIMBUS_GLOBALS {
     WDFDRIVER   Driver;
     WDFWAITLOCK ControlLock;       /* PASSIVE-level lock: keeps IRQL at PASSIVE while creating devices */
@@ -53,7 +59,8 @@ typedef struct _NIMBUS_GLOBALS {
     LONG        FilterInstances;   /* guarded by ControlLock */
 
     WDFSPINLOCK Lock;
-    WDFQUEUE    ReadQueue;         /* copy of the control device's queue, NULL when absent */
+    EX_RUNDOWN_REF QueueRundown;   /* held while a ReadQueue handle is used outside Lock */
+    WDFQUEUE    ReadQueue;         /* copy of the control device's queue, NULL when absent or going away */
     LONG        Isolating;
     LONG        ConnectedMice;
     ULONGLONG   LastReadActivity;  /* KeQueryInterruptTime() of the last read arrival or completion */
