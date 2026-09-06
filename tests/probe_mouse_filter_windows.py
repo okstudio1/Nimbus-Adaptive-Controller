@@ -15,15 +15,21 @@ session; the mouse is isolated for at most a few seconds at a time):
   U6  a read after the watchdog release fails at once with ERROR_NOT_READY
 
 Attended phases (``--attended``): a fake Raw Input game and a Nimbus stand-in
-from ``probe_rawinput_windows.py`` are spawned, and you move the physical mouse
-during three timed phases:
+from ``probe_rawinput_windows.py`` are spawned, and someone at the physical
+mouse moves it during three timed phases. A dialog on screen introduces each
+phase (click OK, then move the mouse until the next dialog), the fake game's
+title bar counts down, and a final dialog shows the verdict, so the person at
+the mouse needs no terminal:
 
   pass-through   game receives WM_INPUT, driver captures nothing
   isolated       game receives NOTHING, driver captures the motion, cursor frozen
   released       game receives WM_INPUT again
 
-Injected motion cannot test the filter (SendInput enters above it), which is
-why this one needs a hand on the mouse.
+Each phase also reports the driver's own counters (packets passed to mouclass
+and packets captured), which tells "nobody moved the mouse" apart from "motion
+bypassed the filter". Injected motion cannot test the filter: SendInput enters
+above it, and so does every remote-control tool (TeamViewer, RDP and the like),
+which is why this one needs a hand on the real mouse at the console.
 
 Run::
 

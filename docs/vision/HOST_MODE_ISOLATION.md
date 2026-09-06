@@ -1,6 +1,6 @@
 # Host Mode: Running Games in an Isolated Environment
 
-**Status:** Research, plus measurements on Windows (section 8, 2026-09-05), a survey of the driver landscape (section 9), and a prototype Windows filter driver in `driver/` that builds but is not yet validated on hardware. Nothing here is shipped.
+**Status:** Research, plus measurements on Windows (section 8, 2026-09-05), a survey of the driver landscape (section 9), and a prototype Windows filter driver in `driver/` that was loaded and validated on the dev machine the same day (section 8.4). Nothing here is shipped.
 **Question:** Could Nimbus run games inside a VM / sandbox ("host mode") the way the Steam Deck appears to, and what hardware would that need?
 
 ---

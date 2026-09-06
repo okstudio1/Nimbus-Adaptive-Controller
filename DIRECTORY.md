@@ -166,7 +166,8 @@ The Nimbus Mouse Filter, a KMDF upper filter on the mouse class that hands the p
 | `nimbus_moufilter/nimbus_moufilter_ioctl.h` | User/kernel contract, mirrored by `src/mouse_isolation_win.py` |
 | `nimbus_moufilter/nimbus_moufilter.inx` | INF template (service install; class filter entry is added by the install script) |
 | `build.ps1` | Build and collect outputs into `driver/out/` (gitignored) |
-| `enable-testsigning.ps1`, `install-dev.ps1`, `uninstall-dev.ps1` | Elevated dev loop |
+| `enable-testsigning.ps1`, `install-dev.ps1`, `uninstall-dev.ps1` | Elevated dev loop; the installer verifies the load and rolls back automatically |
+| `pnp-common.ps1` | Shared helper: restarts every mouse with `pnputil /restart-device` so the filter attaches or detaches without a reboot |
 
 ---
 

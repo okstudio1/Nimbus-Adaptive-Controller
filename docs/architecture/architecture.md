@@ -226,7 +226,7 @@ Mouse isolation is the answer to games that read the mouse through Raw Input, wh
 - **User mode:** `MouseIsolation(on_motion, on_button, on_wheel, on_stopped)`, the same class API as the Linux `src/mouse_isolation.py` on the `linux-uinput-support` branch (evdev button codes included), so that branch's software cursor and synthetic Qt events can be shared between platforms once it merges. The bridge on `main` does not use this module yet. `MOUSE_ISOLATION_AVAILABLE` is meant for the usual graceful-degradation import; `start()` raises `RuntimeError` with an install hint when the driver is absent and refuses to succeed when the driver is attached to no mouse.
 - **Contract:** `driver/nimbus_moufilter/nimbus_moufilter_ioctl.h` and the constants at the top of `mouse_isolation_win.py` must change together.
 
-Status: builds and test-signs; not yet loaded on hardware. See `docs/vision/WINDOWS_MOUSE_FILTER_PLAN.md`.
+Status: dev build validated on hardware on 2026-09-05 (a Raw Input window received nothing while the driver captured every packet); not attestation-signed, not in any release, not yet wired into the bridge. See `docs/vision/WINDOWS_MOUSE_FILTER_PLAN.md`.
 
 ---
 

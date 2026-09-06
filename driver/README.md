@@ -52,9 +52,14 @@ the 64-bit `KitsRoot10` registry value can point at the wrong folder and the
 ## Install for development (elevated, at the machine)
 
 ```powershell
-driver\enable-testsigning.ps1   # once; then reboot
-driver\install-dev.ps1          # copies the .sys, creates the service, adds the class UpperFilters, restarts the mice
+Set-ExecutionPolicy -Scope Process Bypass -Force
+& "C:\path\to\Nimbus-Adaptive-Controller\driver\enable-testsigning.ps1"   # once; then reboot
+& "C:\path\to\Nimbus-Adaptive-Controller\driver\install-dev.ps1"          # copies the .sys, creates the service, adds the class UpperFilters, restarts the mice
 ```
+
+Use the full path: an elevated PowerShell starts in `C:\WINDOWS\system32`, where
+`driver\install-dev.ps1` is taken for a module name and fails with "The module
+'driver' could not be loaded".
 
 The reboot is not optional: `bcdedit` stores the setting for the *next* boot,
 and a self-signed driver attached before that reboot fails to load with

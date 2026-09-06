@@ -1,6 +1,6 @@
 # Windows Mouse Filter Plan
 
-**Status:** Prototype built and test-signed (section 6), not yet loaded on hardware. Matches `driver/README.md`.
+**Status:** Prototype built, test-signed, loaded and validated on the dev machine on 2026-09-05 (sections 5 and 6). Not attestation-signed, not validated against an anti-cheat game, not in any release. Matches `driver/README.md`.
 **Parent doc:** [HOST_MODE_ISOLATION.md](HOST_MODE_ISOLATION.md) (Option F). Measurements that motivate this plan are recorded there under "Measured on Windows".
 **Linux counterpart:** [LINUX_PROBE_PLAN.md](LINUX_PROBE_PLAN.md) and `src/mouse_isolation.py` on the `linux-uinput-support` branch, which this plan reuses.
 
