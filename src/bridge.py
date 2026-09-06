@@ -69,6 +69,7 @@ try:
         is_no_activate_enabled,
         save_foreground_window,
         on_window_activated,
+        set_foreground_window,
     )
     WINDOW_UTILS_AVAILABLE = True
 except Exception:
@@ -1604,6 +1605,16 @@ class ControllerBridge(QObject):
             else:
                 print("[bridge] Full Game Mode: mouse isolation unavailable, continuing without it")
 
+        # The game must hold the foreground for its gamepad to count and for
+        # Raw Input to be its own; do it here so the user need not click the
+        # game first. Nimbus itself is WS_EX_NOACTIVATE from step 0.
+        if success and WINDOW_UTILS_AVAILABLE and game_hwnd:
+            try:
+                if set_foreground_window(int(game_hwnd)):
+                    print("[bridge] Full Game Mode: game brought to the foreground")
+            except Exception:
+                pass
+
         if success:
             print("[bridge] Full Game Mode ACTIVE")
         else:
@@ -1732,8 +1743,26 @@ class ControllerBridge(QObject):
         self._iso_active = True
         self._iso_buttons = Qt.MouseButton.NoButton
         self._iso_last_press = None
+        self._iso_park_cursor_if_stuck()
         self.mouseIsolationChanged.emit(True)
         return True
+
+    def _iso_park_cursor_if_stuck(self) -> bool:
+        """Move the real cursor onto Nimbus if it sits on the game and not on us.
+
+        The relay policy never moves the cursor deeper into the game window,
+        so a cursor that is already there (the game was clicked, or a window
+        moved under it) could not leave. Parking it on Nimbus's centre gives
+        the user a cursor that works again. Safe from any thread.
+        """
+        game, nimbus = self._iso_game_hwnd, self._iso_nimbus_hwnd
+        if not (game and nimbus) or not _mouse_isolation:
+            return False
+        x, y = _mouse_isolation.cursor_position()
+        if _mouse_isolation.point_in_window(game, x, y) and not _mouse_isolation.point_in_window(nimbus, x, y):
+            cx, cy = _mouse_isolation.window_center(nimbus)
+            return bool(cx or cy) and _mouse_isolation.set_cursor_position(cx, cy)
+        return False
 
     @Slot()
     def stopMouseIsolation(self) -> None:  # noqa: N802
@@ -1756,7 +1785,12 @@ class ControllerBridge(QObject):
         game = self._iso_game_hwnd
         if game and _mouse_isolation.point_in_window(game, x, y):
             nimbus = self._iso_nimbus_hwnd
-            return bool(nimbus) and _mouse_isolation.point_in_window(nimbus, x, y)
+            if nimbus and _mouse_isolation.point_in_window(nimbus, x, y):
+                return True
+            # Refused. If the cursor is already sitting on the game, park it
+            # on Nimbus instead of leaving it stuck there.
+            self._iso_park_cursor_if_stuck()
+            return False
         return True
 
     def _iso_cursor_over_nimbus(self) -> bool:

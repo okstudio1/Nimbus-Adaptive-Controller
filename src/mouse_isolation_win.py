@@ -399,6 +399,33 @@ def point_in_window(hwnd: int, x: int, y: int) -> bool:
     return rect.left <= x < rect.right and rect.top <= y < rect.bottom
 
 
+def cursor_position() -> Tuple[int, int]:
+    """The real cursor's screen position (``(0, 0)`` off Windows)."""
+    if not _IS_WINDOWS:
+        return 0, 0
+    pt = wintypes.POINT()
+    if not _u32.GetCursorPos(ctypes.byref(pt)):
+        return 0, 0
+    return pt.x, pt.y
+
+
+def set_cursor_position(x: int, y: int) -> bool:
+    """Move the real cursor with ``SetCursorPos`` (no input event is generated)."""
+    if not _IS_WINDOWS:
+        return False
+    return bool(_u32.SetCursorPos(int(x), int(y)))
+
+
+def window_center(hwnd: int) -> Tuple[int, int]:
+    """Screen centre of a window's rectangle, or ``(0, 0)``."""
+    if not _IS_WINDOWS or not hwnd:
+        return 0, 0
+    rect = wintypes.RECT()
+    if not _u32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return 0, 0
+    return (rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2
+
+
 def hwnd_at_cursor() -> int:
     """The top-level window under the cursor, or 0."""
     if not _IS_WINDOWS:

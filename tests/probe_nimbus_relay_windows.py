@@ -21,6 +21,8 @@ feeds ``MOUSE_INPUT_DATA`` through the module's own parser). Checks:
       Raw Input even unfocused) gets no button and no motion
   N4  the release recentres the stick
   N5  motion aimed at the game window is refused: the cursor never enters it
+  N5b a cursor already sitting on the game is parked onto Nimbus by the next
+      packet, so a physical mouse is never stuck over the game
   N6  a click on the desktop is replayed with SendInput: the sink-registered game
       sees the button events and zero motion (the documented leak)
   N7  stopping Full Game Mode ends isolation and re-enables activation
@@ -309,6 +311,26 @@ def unattended(app: QApplication, bridge: ControllerBridge, engine: QQmlApplicat
     record("N5 motion aimed at the game window is refused", (nx, ny) == (cx, cy) and not inside_game
            and d["input_abs"] == 0,
            f"cursor stayed at ({cx},{cy}) -> ({nx},{ny}), game centre ({gx},{gy}); game WM_INPUT abs={d['input_abs']}")
+
+    # N5b: a cursor that already sits on the game (the game was clicked) is
+    # parked onto Nimbus by the next packet instead of being stuck there.
+    user32.SetCursorPos(gx, gy)
+    time.sleep(0.15)
+    g0 = game.settle()
+    fake.move(5, 0)
+    time.sleep(0.3)
+    px, py = cursor_pos()
+    ncx, ncy = iso.window_center(bridge._iso_nimbus_hwnd)
+    d = game_delta(game, g0)
+    # Two mechanisms park it: the relay policy on refusal, and mouse_hider's
+    # controller-mode loop, which may get there first and then let the small
+    # move through. Either way it must end up on Nimbus, never on the game.
+    on_nimbus = iso.point_in_window(bridge._iso_nimbus_hwnd, px, py)
+    on_game = iso.point_in_window(game.hwnd, px, py)
+    record("N5b a cursor stuck on the game is parked onto Nimbus",
+           on_nimbus and not on_game and abs(px - ncx) <= 8 and abs(py - ncy) <= 8 and d["input_abs"] == 0,
+           f"placed at game centre ({gx},{gy}) -> ({px},{py}); Nimbus centre ({ncx},{ncy}); "
+           f"on_nimbus={on_nimbus} on_game={on_game}; game WM_INPUT abs={d['input_abs']}")
 
     # N6: a click on the desktop is replayed (documented leak: the sink sees the button, never motion)
     screen_w, screen_h = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
