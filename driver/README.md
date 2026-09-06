@@ -4,8 +4,11 @@ A KMDF upper filter on the mouse device class. With no client attached it
 passes every mouse packet through unchanged. While Nimbus holds the control
 device open and turns isolation on, the driver withholds physical mouse packets
 from `mouclass` (so the cursor, Raw Input, and every game stop seeing the mouse)
-and delivers them to Nimbus instead, which drives its virtual stick and its own
-on-screen cursor.
+and delivers them to Nimbus instead. Nimbus drives its virtual stick from them
+and, on Windows, moves the real cursor itself with `SetCursorPos` (the cursor
+relay in `src/mouse_isolation_win.py`), which moves the cursor without creating
+an input event: the mouse keeps working everywhere, the game keeps the
+foreground, and the game's Raw Input sees nothing.
 
 This is the Windows equivalent of the one-line `EVIOCGRAB` grab that
 `src/mouse_isolation.py` uses on Linux (on the `linux-uinput-support` branch,
@@ -18,8 +21,18 @@ and the measurements behind it, are in
 **Status:** dev build loaded and validated on hardware on 2026-09-05 (Windows 11
 25H2, Logitech USB mouse): the attended probe passed 9/9, with the fake Raw Input
 game receiving zero `WM_INPUT` while the driver captured 1,017 packets and none
-were dropped. Not attestation-signed, not validated against an anti-cheat game,
-not in any release. Do not ship it yet.
+were dropped, and the unattended robustness set (client kill and suspension,
+open races, parked-read draining, malformed requests, a 30 s idle soak) passed
+16/16, then 16/16 again under Driver Verifier (standard checks plus WDF
+verification) after a reboot that loaded the filter cleanly, and the filter
+survived mouse restarts both with a client isolating and with none. Interface
+v3 (heartbeat ticks, so a frozen Nimbus loses the mouse within 2 s) and the
+cursor relay in the client were written the same evening; v3 is installed and
+passed the probe 17/17 under Driver Verifier, including the frozen-client
+release. The relay is wired into the bridge's Full Game Mode, and the real
+Nimbus app passed the relay harness 7/7 against the fake Raw Input game
+(`tests/probe_nimbus_relay_windows.py`). Not attestation-signed, not
+validated against an anti-cheat game, not in any release. Do not ship it yet.
 
 ## Layout
 
@@ -84,6 +97,7 @@ Then, from the repo root:
 ```powershell
 venv\Scripts\python -m src.mouse_isolation_win --status      # driver reachable? isolating?
 venv\Scripts\python -m src.mouse_isolation_win --grab 5       # isolate for 5 s (the desktop cursor should freeze)
+venv\Scripts\python -m src.mouse_isolation_win --grab 5 --relay   # same, but the cursor keeps working (cursor relay)
 ```
 
 Remove it with `driver\uninstall-dev.ps1`. Do not also install the INF with
@@ -102,12 +116,19 @@ attestation-signed build.
 - The control device is exclusive: one client at a time. A second open fails
   with `ERROR_ACCESS_DENIED`.
 - Isolation is cleared when the client's handle closes (crash, kill, exit).
-- A watchdog clears isolation if no read is pending for 2 s while isolating.
-  It runs only while isolating. Once isolation is off, every read fails with
-  `ERROR_NOT_READY`, so the client notices a watchdog release at its next read
-  and reports the stop instead of driving a dead software cursor. Every
-  release path (IOCTL, handle cleanup, watchdog) drains reads that were
-  already parked, so a read cannot outlive a release.
+- A watchdog clears isolation if no read has arrived for 2 s while isolating.
+  It runs only while isolating. Since interface v3 a read that has been
+  parked for 1 s with nothing to deliver is completed empty (a heartbeat
+  tick) and the client issues the next one; a client that is frozen or
+  suspended cannot, so it loses the mouse within 2 s of its last read (on v2
+  a parked read kept isolation alive by design; on v3 a client frozen with
+  `NtSuspendProcess` was released 2 s after its last read, probe check U11).
+  Once isolation is off, every read fails with `ERROR_NOT_READY`, so
+  the client notices a watchdog release at its next read and reports the
+  stop. Every release path (IOCTL, handle cleanup, watchdog) drains reads
+  that were already parked, so a read cannot outlive a release. Measured on
+  v2: release 2.1 s after the last read activity; a killed client frees the
+  device in about 30 ms.
 - Coverage: the filter sees every pointer that reports through `mouclass`
   (USB, Bluetooth and PS/2 mice, touchpads in legacy mouse mode). Precision
   Touchpads report through the HID digitizer path straight to `win32k` and
@@ -115,10 +136,11 @@ attestation-signed build.
   `connected_mice`, and `MouseIsolation.start()` refuses to report success
   when it is 0, since the real cursor would keep moving with nothing captured.
 - The keyboard is never filtered, so `Ctrl+Alt+Del` always works and every
-  recovery below can be done from the keyboard. There is no release hotkey
-  yet: the `Ctrl+Alt+F12` listener in `src/mouse_hider.py` only runs during
-  Controller Mode and only stops the pulse. Wiring it to
-  `mouse_isolation_win.stop_all()` is part of the bridge integration.
+  recovery below can be done from the keyboard. `Ctrl+Alt+F12` releases
+  isolation: the client polls it with `GetAsyncKeyState` on its reader thread
+  every 100 ms while a read is parked, so it needs no focus and works when
+  Nimbus's UI thread is stuck. The `Ctrl+Alt+F12` listener in
+  `src/mouse_hider.py` still stops the Controller Mode pulse.
 - A class upper filter is **mandatory once listed**: if the driver fails to
   load, Windows does not start the mouse devices (Device Manager Code 39 or
   Code 19) until the `UpperFilters` entry is removed. `install-dev.ps1`
@@ -133,6 +155,6 @@ attestation-signed build.
 | Mouse dead right after `install-dev.ps1`, script reported a rollback | Driver did not load (signature, test signing, or a load-time bug) | Nothing to do; the rollback already removed the entry. Replug the mouse if it has not come back. Read the reason the script printed. |
 | Mouse dead, no rollback (script interrupted, or `-NoRollback`) | `UpperFilters` still names a driver that will not start | Keyboard: `Win+X`, `A` for an elevated PowerShell, run `driver\uninstall-dev.ps1`, replug the mouse. Or in `regedit`, under `HKLM\SYSTEM\CurrentControlSet\Control\Class\{4D36E96F-E325-11CE-BFC1-08002BE10318}`, edit `UpperFilters` so it reads only `mouclass` (the list normally holds `nimbus_moufilter` above `mouclass`; **`mouclass` must stay**, it is the mouse class driver itself). |
 | Blue screen when a mouse starts (possibly at every boot) | A bug in the filter | Windows opens the recovery environment after two failed boots (or hold Shift while clicking Restart). Troubleshoot, Advanced options, System Restore, pick the "Before Nimbus Mouse Filter dev install" point. Alternative from the recovery Command Prompt: `reg load HKLM\sys C:\Windows\System32\config\SYSTEM`, then `reg add "HKLM\sys\ControlSet001\Control\Class\{4D36E96F-E325-11CE-BFC1-08002BE10318}" /v UpperFilters /t REG_MULTI_SZ /d mouclass /f`, then `reg unload HKLM\sys`. Never delete the value outright: `mouclass` has to remain in it. |
-| Cursor frozen while Nimbus is running | Isolation is on and the client is alive | Expected while Full Game Mode isolates. Close Nimbus (Alt+F4 or Task Manager from the keyboard); closing the handle releases immediately. `Ctrl+Alt+F12` does not release isolation until the bridge wires it. The watchdog releases within 2 s if Nimbus stops reading. |
+| Cursor frozen while Nimbus is running | Isolation is on without the cursor relay, or the relay's reader thread is stuck | With the relay the cursor should keep moving; frozen means the reader is not running. `Ctrl+Alt+F12` releases (polled by the client). Or close Nimbus (Alt+F4 or Task Manager from the keyboard); closing the handle releases immediately. The watchdog releases within 2 s if Nimbus stops issuing reads, including when it is frozen (interface v3). |
 | Cursor frozen and Nimbus is gone | Should not happen (handle cleanup clears isolation) | Replug the mouse (a fresh device instance), or reboot; the flag does not survive a driver reload. Then file the bug with the output of `--status`. |
 | "Test Mode" watermark, anti-cheat games refuse to start | Test signing is on | `bcdedit /set testsigning off` from an elevated prompt, reboot. Do this before playing EAC/BattlEye/Vanguard titles; the unsigned dev driver cannot load without it. |

@@ -10,7 +10,7 @@ Games capture the mouse using one of three mechanisms:
 |---|---|
 | **ClipCursor** — game confines cursor to its window rect | Nimbus continuously releases the clip via polling (`ClipCursor(NULL)`) |
 | **Exclusive Fullscreen** — game takes over the display | Nimbus converts the window to borderless windowed mode |
-| **Raw Input**: game reads mouse deltas from the HID stack (`WM_INPUT`) | Turn Raw Input **off** in the game's settings if it has the option, then use **Controller Mode** (see below). If it has no option, nothing in user mode helps (measured, see the Incompatible section); the Nimbus Mouse Filter kernel driver in `driver/` is the fix in development. |
+| **Raw Input**: game reads mouse deltas from the HID stack (`WM_INPUT`) | Turn Raw Input **off** in the game's settings if it has the option, then use **Controller Mode** (see below). If it has no option, nothing in user mode helps (measured, see the Incompatible section); the Nimbus Mouse Filter kernel driver in `driver/` is the fix in development: with it, Full Game Mode takes the physical mouse away from the game while the real cursor keeps working on Nimbus and the desktop. Not in any release yet. |
 
 ## Access
 
@@ -109,7 +109,7 @@ Some features work, with limitations.
 
 These games use Raw Input exclusively. External cursor release has no effect. Use a second monitor, tablet input device, or game streaming instead.
 
-> **Why this tier can't be fixed in user mode:** `WH_MOUSE_LL` is a Win32 message-level hook, but Raw Input is delivered from the HID stack and never passes through it. Closing this gap requires either isolating the game from the physical mouse or filtering the mouse below `win32k`. See [Host Mode & Input Isolation](vision/HOST_MODE_ISOLATION.md) for research on both.
+> **Why this tier can't be fixed in user mode:** `WH_MOUSE_LL` is a Win32 message-level hook, but Raw Input is delivered from the HID stack and never passes through it. Closing this gap requires either isolating the game from the physical mouse or filtering the mouse below `win32k`. The Nimbus Mouse Filter in `driver/` does the latter and is validated in development (Left 4 Dead 2 with raw input on stayed still while the real cursor kept working), but it is not in any release, and anti-cheat titles cannot be tested until it is attestation-signed. See [Host Mode & Input Isolation](vision/HOST_MODE_ISOLATION.md) for the research and measurements.
 
 | Game | Why |
 |---|---|

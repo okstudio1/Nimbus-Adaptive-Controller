@@ -12,6 +12,10 @@ Conditions
 idle                Two frames with no input at all (noise floor).
 mouse               Relative mouse sweep via ``SendInput``, game foreground.
                     Control: the camera must move.
+setcursorpos        The same sweep applied with ``SetCursorPos`` (how the
+                    cursor relay moves the real cursor).  No input event is
+                    generated, so a Raw Input game must stay still; a game
+                    that reads cursor deltas will move.
 mouse+llhook        Same sweep while a ``WH_MOUSE_LL`` hook drops every mouse
                     event (the strongest form of Full Game Mode's hook).
                     Raw Input games keep moving here; that is the gap.
@@ -145,6 +149,23 @@ def sweep(px: int, steps: int = 50, spacing_s: float = 0.01) -> None:
         time.sleep(spacing_s)
 
 
+def sweep_setcursorpos(px: int, steps: int = 50, spacing_s: float = 0.01) -> None:
+    """Move the cursor ``px`` pixels to the right with ``SetCursorPos``.
+
+    This is how the cursor relay in ``src/mouse_isolation_win.py`` moves the
+    real cursor from captured packets. It creates no input event, so a Raw
+    Input game should not turn; a game that reads cursor deltas will.
+    """
+    d = max(1, px // steps)
+    pt = wintypes.POINT()
+    user32.GetCursorPos(ctypes.byref(pt))
+    x, y = pt.x, pt.y
+    for _ in range(steps):
+        x += d
+        user32.SetCursorPos(x, y)
+        time.sleep(spacing_s)
+
+
 class Pad:
     def __init__(self) -> None:
         self.pad = vg.VX360Gamepad() if VGAMEPAD_AVAILABLE else None
@@ -257,6 +278,7 @@ def run(args: argparse.Namespace) -> int:
     try:
         noise = measure("idle", lambda: time.sleep(args.hold))
         measure("mouse", lambda: sweep(args.sweep))
+        measure("setcursorpos", lambda: sweep_setcursorpos(args.sweep))
         measure("mouse+llhook", lambda: sweep(args.sweep), hook_on, hook_off)
         measure("mouse+panel_fg", lambda: sweep(args.sweep), panel_front)
         if pad.pad:

@@ -123,6 +123,8 @@ Item {
 
                 // Pull data from model
                 property var wData: modelData || {}
+                // Lets tests and tooling find a widget by its profile id
+                objectName: "widget_" + (wData.id || "")
 
                 x: wData.x || 0
                 y: wData.y || 0

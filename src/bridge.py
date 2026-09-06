@@ -12,6 +12,9 @@ underlying subsystems:
   releases the mouse)
 * :mod:`~src.window_utils` — ``WS_EX_NOACTIVATE`` "Game Focus" mode
 * :class:`~src.config.ControllerConfig` — persistent settings + profiles
+* :mod:`~src.mouse_isolation_win`: the Nimbus Mouse Filter driver plus the
+  cursor relay (Full Game Mode takes the physical mouse away from the game
+  while the real cursor keeps working)
 
 Bridge responsibilities
 -----------------------
@@ -38,9 +41,12 @@ property ``controller``.
 from __future__ import annotations
 
 import sys
+import time
 from typing import Optional
 
 from PySide6.QtCore import QObject, Slot, Signal, Property, QTimer
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QPointF, Qt
+from PySide6.QtGui import QGuiApplication, QMouseEvent, QWheelEvent
 from PySide6.QtGui import QCursor, QWindow
 
 from .config import ControllerConfig
@@ -84,6 +90,33 @@ except Exception:
     MOUSE_HIDER_AVAILABLE = False
     _mouse_hider = None
 
+# Mouse isolation: the physical mouse is taken away from every other
+# application. Windows: the Nimbus Mouse Filter driver plus the cursor relay
+# (src/mouse_isolation_win.py); the flag is True only when the driver's control
+# device exists, so a machine without it keeps today's mouse_hider Game Mode.
+# Linux (linux-uinput-support branch): evdev grab + software cursor, same API.
+try:
+    if sys.platform == "win32":
+        from . import mouse_isolation_win as _mouse_isolation
+    else:
+        _mouse_isolation = None
+    MOUSE_ISOLATION_AVAILABLE = bool(_mouse_isolation and _mouse_isolation.MOUSE_ISOLATION_AVAILABLE)
+except Exception:
+    MOUSE_ISOLATION_AVAILABLE = False
+    _mouse_isolation = None
+
+_ISO_BUTTON_MAP = {0x110: Qt.MouseButton.LeftButton, 0x111: Qt.MouseButton.RightButton,
+                   0x112: Qt.MouseButton.MiddleButton}
+
+
+class _IsolationRelay(QObject):
+    """Marshals mouse-isolation reader-thread callbacks onto the Qt thread."""
+
+    motion = Signal(int, int)
+    button = Signal(int, bool)
+    wheel = Signal(int, int)
+    stopped = Signal(str)
+
 
 class ControllerBridge(QObject):
     """QObject bridge between the QML UI and the Python back end.
@@ -124,6 +157,7 @@ class ControllerBridge(QObject):
         recentProfilesChanged(): Recent-profiles list updated.
     """
 
+    mouseIsolationChanged = Signal(bool)  # Emits when the physical mouse is taken from, or given back to, the game
     scaleFactorChanged = Signal(float)
     vjoyConnectionChanged = Signal(bool)
     debugBordersChanged = Signal(bool)
@@ -158,6 +192,19 @@ class ControllerBridge(QObject):
         self._cursor_release_active = False
         self._borderless_game_hwnd: int = 0
         self._controller_mode_active = False
+        # Mouse isolation (Windows: kernel filter + cursor relay). The relay
+        # object turns reader-thread callbacks into queued signals.
+        self._iso = None
+        self._iso_active = False
+        self._iso_game_hwnd = 0
+        self._iso_nimbus_hwnd = 0
+        self._iso_buttons = Qt.MouseButton.NoButton
+        self._iso_last_press = None  # (monotonic time, button, x, y)
+        self._iso_relay = _IsolationRelay(self)
+        self._iso_relay.motion.connect(self._on_iso_motion, Qt.ConnectionType.QueuedConnection)
+        self._iso_relay.button.connect(self._on_iso_button, Qt.ConnectionType.QueuedConnection)
+        self._iso_relay.wheel.connect(self._on_iso_wheel, Qt.ConnectionType.QueuedConnection)
+        self._iso_relay.stopped.connect(self._on_iso_stopped, Qt.ConnectionType.QueuedConnection)
         # Load recent profiles from persistent config (most-recent first)
         self._recent_profiles: list = list(self._config.get("ui.recent_profiles", []))
         
@@ -1458,6 +1505,9 @@ class ControllerBridge(QObject):
           1. Make game borderless (if not already)
           2. Start ClipCursor release polling (fights cursor confinement)
           3. Start Controller Mode (makes game voluntarily release mouse)
+          4. Mouse isolation (Windows with the filter driver installed: the
+             game stops seeing the physical mouse, the real cursor keeps
+             working through the cursor relay, never over the game window)
         
         Args:
             game_hwnd: HWND of the game window.
@@ -1543,6 +1593,17 @@ class ControllerBridge(QObject):
         elif not gamepad:
             print("[bridge] Full Game Mode: no ViGEm gamepad — controller mode SKIPPED")
         
+        # Step 3: take the physical mouse away from the game entirely (kernel
+        # filter + cursor relay). Independent of controller mode: the hook in
+        # mouse_hider still covers games that read the cursor position.
+        if MOUSE_ISOLATION_AVAILABLE and bool(self._config.get("controller.game_mode_isolate_mouse", True)):
+            self._iso_game_hwnd = int(game_hwnd)
+            if self._start_isolation():
+                success = True
+                print("[bridge] Full Game Mode: mouse isolation STARTED (cursor relay)")
+            else:
+                print("[bridge] Full Game Mode: mouse isolation unavailable, continuing without it")
+
         if success:
             print("[bridge] Full Game Mode ACTIVE")
         else:
@@ -1557,6 +1618,10 @@ class ControllerBridge(QObject):
         Reverses startFullGameMode: stops controller mode, cursor release,
         and restores the game window.
         """
+        # Give the physical mouse back first
+        if MOUSE_ISOLATION_AVAILABLE:
+            self.stopMouseIsolation()
+        self._iso_game_hwnd = 0
         # Stop controller mode
         if MOUSE_HIDER_AVAILABLE and _mouse_hider:
             try:
@@ -1599,6 +1664,185 @@ class ControllerBridge(QObject):
         
         print("[bridge] Full Game Mode stopped")
 
+    # =================================================================
+    # Mouse isolation: the physical mouse is taken away from the game.
+    # Windows: Nimbus Mouse Filter driver + cursor relay (the real cursor keeps
+    # working, policed per point so it never wanders over the game). The
+    # Linux branch uses the same names with an evdev grab and a software cursor.
+    # =================================================================
+
+    def _get_iso_active(self) -> bool:
+        return bool(self._iso_active)
+
+    mouseIsolationActive = Property(bool, _get_iso_active, notify=mouseIsolationChanged)
+
+    @Slot(result=bool)
+    def isMouseIsolationAvailable(self) -> bool:  # noqa: N802
+        """True when the isolation driver is installed and attached to a mouse."""
+        if not MOUSE_ISOLATION_AVAILABLE or not _mouse_isolation:
+            return False
+        try:
+            return bool(_mouse_isolation.list_pointer_devices())
+        except Exception:
+            return False
+
+    @Slot(result=bool)
+    def isMouseIsolationActive(self) -> bool:  # noqa: N802
+        return bool(self._iso_active)
+
+    @Slot(result=bool)
+    def startMouseIsolation(self) -> bool:  # noqa: N802
+        """Take the physical mouse away from every other application.
+
+        On Windows the real cursor keeps working (cursor relay) and the game,
+        which keeps the foreground, receives no mouse input at all.
+        ``Ctrl+Alt+F12``, :meth:`stopMouseIsolation`, closing Nimbus, or the
+        driver's watchdog give it back.
+        """
+        return self._start_isolation()
+
+    def _start_isolation(self) -> bool:
+        if not MOUSE_ISOLATION_AVAILABLE or not _mouse_isolation:
+            print("[bridge] mouse isolation: driver not available")
+            return False
+        if self._iso_active:
+            return True
+        if self._window is None:
+            print("[bridge] mouse isolation: window not set yet")
+            return False
+        try:
+            self._iso_nimbus_hwnd = int(self._window.winId())
+        except Exception:
+            self._iso_nimbus_hwnd = 0
+        relay = self._iso_relay
+        iso = _mouse_isolation.MouseIsolation(
+            on_motion=lambda dx, dy: relay.motion.emit(int(dx), int(dy)),
+            on_button=lambda code, pressed: relay.button.emit(int(code), bool(pressed)),
+            on_wheel=lambda h, v: relay.wheel.emit(int(h), int(v)),
+            on_stopped=lambda reason: relay.stopped.emit(str(reason)),
+            hotkey=True,
+            cursor_relay=self._iso_relay_allowed,
+        )
+        try:
+            iso.start()
+        except Exception as exc:
+            print(f"[bridge] mouse isolation failed: {exc}")
+            return False
+        self._iso = iso
+        self._iso_active = True
+        self._iso_buttons = Qt.MouseButton.NoButton
+        self._iso_last_press = None
+        self.mouseIsolationChanged.emit(True)
+        return True
+
+    @Slot()
+    def stopMouseIsolation(self) -> None:  # noqa: N802
+        """Give the physical mouse back (no-op when inactive)."""
+        iso = self._iso
+        if iso is not None and iso.active:
+            iso.stop("requested")
+        elif self._iso_active:
+            self._on_iso_stopped("requested")
+
+    def _iso_relay_allowed(self, x: int, y: int) -> bool:
+        """Cursor-relay policy, asked on the reader thread for every packet.
+
+        The real cursor may go anywhere except over the game window, unless
+        that spot is also covered by Nimbus (the overlay sits on the game).
+        Same rule as the ``WH_MOUSE_LL`` hook in :mod:`mouse_hider`, applied
+        before the cursor moves instead of after, so games that read the
+        cursor position see nothing either.
+        """
+        game = self._iso_game_hwnd
+        if game and _mouse_isolation.point_in_window(game, x, y):
+            nimbus = self._iso_nimbus_hwnd
+            return bool(nimbus) and _mouse_isolation.point_in_window(nimbus, x, y)
+        return True
+
+    def _iso_cursor_over_nimbus(self) -> bool:
+        return bool(self._iso_nimbus_hwnd) and _mouse_isolation.hwnd_at_cursor() == self._iso_nimbus_hwnd
+
+    def _iso_send_mouse(self, ev_type, button) -> None:
+        """Deliver a synthetic mouse event to our window at the real cursor position."""
+        if self._window is None:
+            return
+        global_pos = QCursor.pos()
+        local = QPointF(self._window.mapFromGlobal(global_pos))
+        ev = QMouseEvent(ev_type, local, local, QPointF(global_pos), button, self._iso_buttons,
+                         Qt.KeyboardModifier.NoModifier)
+        QCoreApplication.sendEvent(self._window, ev)
+
+    @Slot(int, int)
+    def _on_iso_motion(self, dx: int, dy: int) -> None:
+        # The relay already moved the real cursor on the reader thread, and Qt
+        # receives the ordinary hover moves for it. Only a synthetic button
+        # that is still held needs move events, so the pressed widget keeps
+        # dragging.
+        if self._iso_active and self._iso_buttons != Qt.MouseButton.NoButton:
+            self._iso_send_mouse(QEvent.Type.MouseMove, Qt.MouseButton.NoButton)
+
+    @Slot(int, bool)
+    def _on_iso_button(self, code: int, pressed: bool) -> None:
+        if not self._iso_active:
+            return
+        button = _ISO_BUTTON_MAP.get(int(code))
+        # Over our own window the click is synthesised into Qt: nothing is
+        # injected, so the game sees no button either. Anywhere else it is
+        # replayed into Windows (the desktop, or the game's own menus), which
+        # a foreground Raw Input game does see as a button, never as motion.
+        if button is None:
+            synthesize = False
+        elif pressed:
+            synthesize = self._iso_cursor_over_nimbus()
+        else:
+            synthesize = bool(self._iso_buttons & button)   # release goes where the press went
+        if not synthesize:
+            _mouse_isolation.inject_button(int(code), bool(pressed))
+            return
+        if pressed:
+            now = time.monotonic()
+            interval = QGuiApplication.styleHints().mouseDoubleClickInterval() / 1000.0
+            pos = QCursor.pos()
+            last = self._iso_last_press
+            is_double = (last is not None and last[1] == button and now - last[0] <= interval
+                         and abs(last[2] - pos.x()) < 6 and abs(last[3] - pos.y()) < 6)
+            self._iso_buttons |= button
+            self._iso_last_press = None if is_double else (now, button, pos.x(), pos.y())
+            self._iso_send_mouse(QEvent.Type.MouseButtonDblClick if is_double else QEvent.Type.MouseButtonPress,
+                                 button)
+        else:
+            self._iso_buttons &= ~button
+            self._iso_send_mouse(QEvent.Type.MouseButtonRelease, button)
+
+    @Slot(int, int)
+    def _on_iso_wheel(self, horizontal: int, vertical: int) -> None:
+        if not self._iso_active or self._window is None:
+            return
+        if not self._iso_cursor_over_nimbus():
+            _mouse_isolation.inject_wheel(int(horizontal), int(vertical))
+            return
+        global_pos = QCursor.pos()
+        local = QPointF(self._window.mapFromGlobal(global_pos))
+        ev = QWheelEvent(local, QPointF(global_pos), QPoint(0, 0),
+                         QPoint(int(horizontal) * 120, int(vertical) * 120),
+                         self._iso_buttons, Qt.KeyboardModifier.NoModifier,
+                         Qt.ScrollPhase.NoScrollPhase, False)
+        QCoreApplication.sendEvent(self._window, ev)
+
+    @Slot(str)
+    def _on_iso_stopped(self, reason: str) -> None:
+        if not self._iso_active:
+            return
+        # Release any synthetic button still held so widgets do not stick
+        for _code, button in _ISO_BUTTON_MAP.items():
+            if self._iso_buttons & button:
+                self._iso_buttons &= ~button
+                self._iso_send_mouse(QEvent.Type.MouseButtonRelease, button)
+        self._iso_active = False
+        self._iso = None
+        print(f"[bridge] mouse isolation stopped ({reason})")
+        self.mouseIsolationChanged.emit(False)
+
     @Slot(result="QVariantMap")
     def getGameModeDiagnostics(self) -> dict:  # noqa: N802
         """Return diagnostic info about Game Mode readiness for the UI."""
@@ -1613,6 +1857,8 @@ class ControllerBridge(QObject):
             "profile": str(self._config.get_layout_type()),
             "use_vigem": self._use_vigem,
             "controller_mode_active": self._controller_mode_active,
+            "mouse_isolation": MOUSE_ISOLATION_AVAILABLE,
+            "mouse_isolation_active": self._iso_active,
             "driver_installed": False,
         }
         # Check if ViGEmBus driver is installed on Windows

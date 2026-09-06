@@ -1,6 +1,6 @@
 # Host Mode: Running Games in an Isolated Environment
 
-**Status:** Research, plus measurements on Windows (section 8, 2026-09-05), a survey of the driver landscape (section 9), and a prototype Windows filter driver in `driver/` that was loaded and validated on the dev machine the same day (section 8.4). Nothing here is shipped.
+**Status:** Research, plus measurements on Windows (section 8, 2026-09-05), a survey of the driver landscape (section 9), and a prototype Windows filter driver in `driver/` that was loaded and validated on the dev machine the same day (section 8.4). The cursor relay (7.2, measured in 8.5) was wired into the app that evening and passed the real-app harness. Nothing here is shipped.
 **Question:** Could Nimbus run games inside a VM / sandbox ("host mode") the way the Steam Deck appears to, and what hardware would that need?
 
 ---
@@ -184,15 +184,17 @@ So a filter at this layer does what `WH_MOUSE_LL` cannot, and it does it for the
 
 This is the finding that changes the design. HidHide can hide a gamepad from one process and not another because applications open HID devices directly, so there is a process context at the moment of the open. **Mice have no such chokepoint.** Every application receives mouse input from `win32k`, not by opening the device, and `MouseClassServiceCallback` runs at DISPATCH_LEVEL in an arbitrary DPC context where "the current process" is meaningless.
 
-You therefore cannot build "hide the mouse from the game but not from Nimbus." The only shape available is:
+You therefore cannot build "hide the mouse from the game but not from Nimbus" at the filter. The shape available is:
 
 1. Suppress the physical mouse **globally**, for every application including the desktop shell.
 2. Simultaneously publish those packets to Nimbus over a private channel (an inverted-call IOCTL on a control device object).
-3. Nimbus consumes the deltas, drives its virtual stick, outputs to ViGEm, and **renders and moves its own cursor**, because the real one no longer moves.
+3. Nimbus consumes the deltas, drives its virtual stick, outputs to ViGEm, and then does one of two things about the cursor.
 
-That is a larger change to [bridge.py](../../src/bridge.py) than "add a driver." Nimbus stops being a Qt app that receives mouse events and becomes the system's mouse owner.
+**Software cursor** (the Linux F4 model): Nimbus **renders and moves its own cursor** and synthesises its own Qt events, because the real one no longer moves. That is a larger change to [bridge.py](../../src/bridge.py) than "add a driver": Nimbus stops being a Qt app that receives mouse events and becomes the system's mouse owner, and nothing outside Nimbus can be clicked while it holds the mouse.
 
-**Note the convergence:** this is precisely the F4 consequence documented in [LINUX_PROBE_PLAN.md](LINUX_PROBE_PLAN.md), where `EVIOCGRAB` also takes the device from the compositor and forces Nimbus to own the cursor. The two platforms arrive at an identical architecture from opposite directions. That is a strong argument for **running the Linux probe first**: it validates the "Nimbus owns the cursor" interaction model for a weekend and $0, before committing to kernel work that assumes it.
+**Cursor relay** (the Windows model, chosen 2026-09-05): Nimbus applies each captured delta to the **real** cursor with `SetCursorPos`. That call changes the cursor position without generating an input event, so it produces no `WM_INPUT`, no `WH_MOUSE_LL` event and no Raw Input for anyone, only `WM_MOUSEMOVE` for the window under the cursor (measured in section 8.5). The result is the requirement as stated: the mouse keeps working everywhere, on the desktop and on Nimbus's own controls, the game keeps the foreground and its gamepad, and the game's Raw Input stream is empty. Buttons are the one place a per-window decision is needed, because anything replayed with `SendInput` does become Raw Input: over Nimbus's own window the bridge synthesises the Qt click itself, anywhere else it replays the click with `SendInput` (a click on another window changes the foreground anyway, and a click on the game is one the game should get). Games that read the cursor position instead of Raw Input see the relayed cursor move; those are the games the existing `WH_MOUSE_LL` Full Game Mode already handles, and that hook stays on.
+
+**Note the convergence:** the software-cursor half is precisely the F4 consequence documented in [LINUX_PROBE_PLAN.md](LINUX_PROBE_PLAN.md), where `EVIOCGRAB` also takes the device from the compositor and forces Nimbus to own the cursor. The relay has no Linux twin: a grabbed device's motion re-injected through `uinput` is a new input device to the compositor and to the game alike. So the Linux probe still validates the software-cursor model, and Windows takes the relay.
 
 ### 7.3 Signing, with an EV certificate already in hand
 
@@ -254,7 +256,7 @@ And one that cuts hard against:
 | EV certificate | $0, already held |
 | Partner Center | One-time registration, fee to verify |
 | Driver development | The real cost. KMDF filter from `moufiltr`, inverted-call IOCTL channel, installer, and a guaranteed-release watchdog. |
-| Nimbus rework | Input intake moves off Qt events onto the driver channel; Nimbus renders its own cursor (7.2) |
+| Nimbus rework | Smaller than first thought: with the cursor relay (7.2) the real cursor keeps working and Qt keeps receiving it, so the bridge only adds the driver channel, a per-point relay policy and a per-window click policy. Done on Windows 2026-09-05. |
 | Ongoing | Cert renewal, re-submission per driver revision, and support for a kernel component whose failure mode is "user has no mouse" |
 | Risk | Anti-cheat may block it regardless (7.6), and it is blocked in VMs anyway, so it never combines with Options C or D |
 
@@ -264,7 +266,7 @@ Do not start with the driver. In order:
 
 1. **Email nefarius.** Ask whether HidHide could ever cover the mouse class, or whether he would advise on it. Effectively free, and he has already solved every adjacent problem.
 2. **Check Interception's current signing status.** Done 2026-09-05, see [section 9.1](#91-interception): unmaintained, licensor unreachable, signing undocumented. It is not a prototype path. OpenInputBridge is the maintained successor to watch.
-3. **Run the Linux probe** ([LINUX_PROBE_PLAN.md](LINUX_PROBE_PLAN.md)). It validates the "Nimbus owns the cursor" model from 7.2 for a weekend, and that model is the part most likely to be wrong.
+3. **Run the Linux probe** ([LINUX_PROBE_PLAN.md](LINUX_PROBE_PLAN.md)). It validates the software-cursor model from 7.2, which Linux still needs. Windows no longer depends on it: the cursor relay was measured (8.5) and wired into the app the same day.
 4. **Open an accessibility dialogue with one anti-cheat vendor** before writing kernel code. If the answer is "we will never allow-list a software mouse-to-pad converter," that is worth knowing before the effort, not after. Respawn's stated position makes them a reasonable first contact.
 5. **Only then** build, using `moufiltr` as the base and attestation signing for distribution.
 
@@ -330,9 +332,32 @@ The Nimbus Mouse Filter from [WINDOWS_MOUSE_FILTER_PLAN.md](WINDOWS_MOUSE_FILTER
 | isolated | **0** | 0 | **1,017** (103,653 px delivered to the client) |
 | released | 54,163 | 1,012 | 0 |
 
-Nothing dropped, the cursor froze during isolation and returned on release, and the six unattended safety checks (lifecycle, handle drop, watchdog, fail-fast read, exclusivity) passed first. This is the Windows counterpart of the Linux P2 result in section 5, with one gap: the game here is the probe's fake window, because Elden Ring's anti-cheat refuses to start while test signing is on. Closing that gap needs an attestation-signed build.
+Nothing dropped, the cursor froze during isolation and returned on release, and the six unattended safety checks (lifecycle, handle drop, watchdog, fail-fast read, exclusivity) passed first. Ten robustness checks added later that day (client kill and suspension, open races, parked-read draining, 19 malformed requests, a 30 s idle soak) passed 16/16, and 17/17 once the driver's heartbeat (interface v3) was installed; see section 5 of the plan. This is the Windows counterpart of the Linux P2 result in section 5, with one gap: the game here is the probe's fake window, because Elden Ring's anti-cheat refuses to start while test signing is on. Closing that gap needs an attestation-signed build.
 
 One operational fact came out of the first attempt: motion sent through TeamViewer never reached the driver at all (72 `WM_MOUSEMOVE` at the game, 0 packets at the filter), because remote-control tools inject with `SendInput`, above `mouclass`. Hands-on validation has to happen at the physical mouse.
+
+### 8.5 Measured: SetCursorPos is invisible to Raw Input (2026-09-05)
+
+The cursor-relay model in 7.2 rests on one fact, so it was measured with the fake Raw Input game (`tests/probe_rawinput_windows.py`, scenario `setcursorpos`): 40 cursor moves of 9 px on both axes applied with `SetCursorPos`, against the same 40 moves injected with `SendInput`, game foreground, `WH_MOUSE_LL` hook counting.
+
+| Stimulus | Game `WM_INPUT` delta | Game `WM_MOUSEMOVE` | `WH_MOUSE_LL` events | Stand-in (`RIDEV_INPUTSINK`) `WM_INPUT` |
+|---|---|---|---|---|
+| `SendInput` (the physical-motion stand-in) | 720 | 39 | 40 | 720 |
+| `SetCursorPos` | **0** | 11 (coalesced) | **0** | **0** |
+
+Identical with the game itself registered `RIDEV_INPUTSINK`. The game kept the foreground and received no activation or focus message during the `SetCursorPos` run. Motion relayed this way reaches the cursor and the window under it and nothing else: not the Raw Input tier, not hooks, not sink registrations. Combined with 8.4 (the filter removes the physical packets from that tier), the relay gives a moving, clickable cursor and a game that sees no mouse, with no focus change.
+
+The same evening, against a real engine under test signing: **Left 4 Dead 2** (Source, no anti-cheat), windowed 1600x900 in a chapter-2 safe room, `tests/probe_game_mouselook_windows.py` with a 400 px sweep, once with `m_rawinput 1` and once with `m_rawinput 0`:
+
+| Condition | `m_rawinput 1` (Raw Input) | `m_rawinput 0` (cursor deltas) |
+|---|---|---|
+| idle (noise floor) | 976, still | 368, still |
+| `SendInput` sweep | 10,887, **moved** | 7,371, **moved** |
+| `SetCursorPos` sweep (the relay) | 1,357, **still** | 15,499, **moved** |
+| `SendInput` sweep under the `WH_MOUSE_LL` hook | 9,551, **moved** | 537, **still** |
+| `SendInput` sweep, game foreground again | 10,707, moved | 11,062, moved |
+
+Read the two columns together: the relay is invisible exactly where the hook is useless (Raw Input), and visible exactly where the hook works (cursor deltas). Full Game Mode therefore runs both, and every game measured so far falls to one of them. The pad rows are missing because Source ignores gamepads until `joystick 1` is set; that is a game setting, not a finding.
 
 ---
 

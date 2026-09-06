@@ -27,6 +27,7 @@
 #define NIMBUS_RING_CAPACITY        1024
 #define NIMBUS_WATCHDOG_PERIOD_MS   250
 #define NIMBUS_WATCHDOG_TIMEOUT     ((ULONGLONG)NIMBUS_MOUFILTER_WATCHDOG_MS * 10000ULL)  /* 100 ns units */
+#define NIMBUS_TICK_TIMEOUT         ((ULONGLONG)NIMBUS_MOUFILTER_TICK_MS * 10000ULL)      /* 100 ns units */
 
 /* Per filtered mouse. */
 typedef struct _FILTER_EXTENSION {

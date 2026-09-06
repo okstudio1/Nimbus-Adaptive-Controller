@@ -3,17 +3,33 @@ Windows mouse isolation: talk to the Nimbus Mouse Filter kernel driver.
 
 This is the Windows counterpart of the Linux ``EVIOCGRAB`` module
 (``src/mouse_isolation.py`` on the ``linux-uinput-support`` branch, not yet
-merged into ``main``), and it presents the **same** ``MouseIsolation`` class so
-that, once that branch lands, :mod:`src.bridge` can use either behind a
-``MOUSE_ISOLATION_AVAILABLE`` flag. Nothing on ``main`` imports this module
-yet. Where Linux grabs the evdev node directly, here the kernel filter
-(``driver/nimbus_moufilter``) withholds physical mouse packets from ``mouclass``
-and hands them to this process through ``\\\\.\\NimbusMouseFilter``.
+merged into ``main``), and it presents the **same** ``MouseIsolation`` class.
+:mod:`src.bridge` imports it under try/except into ``MOUSE_ISOLATION_AVAILABLE``
+and drives it from Full Game Mode (``startMouseIsolation`` /
+``stopMouseIsolation``); the Linux module slots into the same names when that
+branch merges. Where Linux grabs the evdev node directly, here the kernel
+filter (``driver/nimbus_moufilter``) withholds physical mouse packets from
+``mouclass`` and hands them to this process through ``\\\\.\\NimbusMouseFilter``.
 
 While isolation is on, Windows itself stops seeing the physical mouse (cursor,
-Raw Input, and every application, including a game), so the bridge draws its own
-cursor and synthesises Qt events from the deltas delivered here, exactly as on
-Linux (see the F4 note in ``docs/vision/LINUX_PROBE_PLAN.md``).
+Raw Input, and every application, including a game). What happens next is the
+caller's choice:
+
+* **Software cursor** (``cursor_relay=False``, the Linux model): the bridge
+  draws its own cursor and synthesises Qt events from the deltas delivered
+  here (see the F4 note in ``docs/vision/LINUX_PROBE_PLAN.md``).
+* **Cursor relay** (``cursor_relay=True``, the Windows Full Game Mode model):
+  the reader thread applies every captured motion packet to the real Windows
+  cursor with ``SetCursorPos``, which moves the cursor **without creating an
+  input event**: no ``WM_INPUT``, no ``WH_MOUSE_LL`` event, only
+  ``WM_MOUSEMOVE`` for the window under the cursor (measured in
+  ``docs/vision/HOST_MODE_ISOLATION.md``, section 8.5). The desktop and Nimbus
+  keep a normal, usable cursor, the game keeps the foreground, and the game's
+  Raw Input stream is empty. Buttons and the wheel are **not** relayed by this
+  module: they arrive through ``on_button`` and ``on_wheel`` as before, and the
+  bridge decides per click (synthesised Qt events over Nimbus's own window;
+  :func:`inject_button` and :func:`inject_wheel` elsewhere), because anything
+  injected with ``SendInput`` does become Raw Input.
 
 Button codes reported to ``on_button`` are the Linux evdev codes
 (``BTN_LEFT`` = 0x110, ...) so the bridge's button map from the Linux branch
@@ -43,15 +59,18 @@ the driver is missing or another process holds it.
 Safety
 ------
 * The driver clears isolation when this process's handle closes (crash, kill,
-  exit) and via its own 2 s read-inactivity watchdog. Once isolation is off the
-  driver fails every read with ``ERROR_NOT_READY``, so after a watchdog release
-  the reader thread exits and ``on_stopped`` fires instead of the software
-  cursor going dead while the real cursor moves.
+  exit) and via its own 2 s watchdog. Since interface v3 the watchdog counts
+  only read *arrivals* as life: a read parked for 1 s with nothing to deliver
+  is completed empty (a tick, ``ticks`` counts them) and the reader issues the
+  next one, so a Nimbus that is frozen or suspended stops re-issuing and loses
+  the mouse within 2 s of its last read. Once isolation is off the driver
+  fails every read with ``ERROR_NOT_READY``, so the reader thread exits and
+  ``on_stopped`` fires instead of the cursor going dead.
 * :meth:`MouseIsolation.stop` is idempotent and registered with :mod:`atexit`.
-* This module installs no hotkey. Until the bridge wires ``Ctrl+Alt+F12`` to
-  :func:`stop_all`, isolation ends through :meth:`MouseIsolation.stop`, by
-  closing Nimbus (handle cleanup), or by the watchdog once reads stop. The
-  driver never touches the keyboard.
+* ``Ctrl+Alt+F12`` releases when ``hotkey`` is True (the default, as on
+  Linux). It is polled on the reader thread with ``GetAsyncKeyState`` every
+  100 ms while a read is parked, so it works when the UI thread is stuck and
+  needs no focus. The driver never touches the keyboard.
 
 Requirements
 ------------
@@ -65,15 +84,20 @@ import atexit
 import struct
 import sys
 import threading
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 _IS_WINDOWS = sys.platform == "win32"
 
 # Must match driver/nimbus_moufilter/nimbus_moufilter_ioctl.h
 DEVICE_PATH = r"\\.\NimbusMouseFilter"
-INTERFACE_VERSION = 2
+INTERFACE_VERSION = 3
 IOCTL_NIMBUS_SET_ISOLATION = 0x00222000
 IOCTL_NIMBUS_GET_STATUS = 0x00222004
+WATCHDOG_MS = 2000      # NIMBUS_MOUFILTER_WATCHDOG_MS: release when no read arrives for this long
+TICK_MS = 1000          # NIMBUS_MOUFILTER_TICK_MS: a parked read is completed empty after this long
+
+HOTKEY_POLL_MS = 100    # how often the reader thread checks Ctrl+Alt+F12 while a read is parked
+_HOTKEY_HIT = -1        # internal: the read wait ended because the hotkey was held
 
 # MOUSE_INPUT_DATA (ntddmou.h), x64 packing is natural with no padding here.
 #   USHORT UnitId, Flags, ButtonFlags, ButtonData; ULONG RawButtons;
@@ -171,6 +195,61 @@ if _IS_WINDOWS:
     _k32.CloseHandle.restype = wintypes.BOOL
     _u32.GetSystemMetrics.argtypes = [ctypes.c_int]
     _u32.GetSystemMetrics.restype = ctypes.c_int
+    _k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    _k32.WaitForSingleObject.restype = wintypes.DWORD
+    _u32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+    _u32.SetCursorPos.restype = wintypes.BOOL
+    _u32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
+    _u32.GetCursorPos.restype = wintypes.BOOL
+    _u32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+    _u32.GetAsyncKeyState.restype = ctypes.c_short
+    _u32.SystemParametersInfoW.argtypes = [wintypes.UINT, wintypes.UINT, ctypes.c_void_p, wintypes.UINT]
+    _u32.SystemParametersInfoW.restype = wintypes.BOOL
+    _u32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    _u32.GetWindowRect.restype = wintypes.BOOL
+    _u32.WindowFromPoint.argtypes = [wintypes.POINT]
+    _u32.WindowFromPoint.restype = wintypes.HWND
+    _u32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    _u32.GetAncestor.restype = wintypes.HWND
+    GA_ROOT = 2
+
+    class _MOUSEINPUT(ctypes.Structure):
+        _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("mouseData", wintypes.DWORD),
+                    ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_void_p)]
+
+    class _INPUT(ctypes.Structure):
+        """Win32 INPUT: 40 bytes on x64 (the union is sized by MOUSEINPUT)."""
+        class _U(ctypes.Union):
+            _fields_ = [("mi", _MOUSEINPUT), ("_pad", ctypes.c_byte * 32)]
+        _anonymous_ = ("u",)
+        _fields_ = [("type", wintypes.DWORD), ("u", _U)]
+
+    _u32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(_INPUT), ctypes.c_int]
+    _u32.SendInput.restype = wintypes.UINT
+
+    WAIT_OBJECT_0 = 0
+    INPUT_MOUSE = 0
+    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP = 0x0002, 0x0004
+    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP = 0x0008, 0x0010
+    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP = 0x0020, 0x0040
+    MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP = 0x0080, 0x0100
+    MOUSEEVENTF_WHEEL, MOUSEEVENTF_HWHEEL = 0x0800, 0x1000
+    XBUTTON1, XBUTTON2 = 0x0001, 0x0002
+    SPI_GETMOUSESPEED = 0x0070
+    VK_CONTROL, VK_MENU, VK_F12 = 0x11, 0x12, 0x7B
+
+    # evdev button -> (SendInput down flag, up flag, mouseData)
+    _INJECT_BUTTONS = {
+        BTN_LEFT: (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, 0),
+        BTN_RIGHT: (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, 0),
+        BTN_MIDDLE: (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, 0),
+        BTN_SIDE: (MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, XBUTTON1),
+        BTN_EXTRA: (MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, XBUTTON2),
+    }
+
+# The multiplier behind the Windows pointer-speed slider (1 to 20; 10 is 1.0).
+_MOUSE_SPEED_MULTIPLIER = (0.03125, 0.0625, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0,
+                           1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0, 3.25, 3.5)
 
 
 class DriverMissingError(RuntimeError):
@@ -249,6 +328,89 @@ def _query_status(handle: int) -> Dict[str, int]:
         raise RuntimeError(f"IOCTL_NIMBUS_GET_STATUS returned {returned} bytes, "
                            f"expected {_STATUS_STRUCT.size}")
     return dict(zip(_STATUS_FIELDS, _STATUS_STRUCT.unpack(buf.raw)))
+
+
+def pointer_speed_multiplier() -> float:
+    """The multiplier the Windows pointer-speed setting applies to mouse counts.
+
+    The cursor relay uses it so relayed motion feels like the desktop pointer.
+    "Enhance pointer precision" (acceleration) is not reproduced.
+    """
+    if not _IS_WINDOWS:
+        return 1.0
+    speed = ctypes.c_int(10)
+    if not _u32.SystemParametersInfoW(SPI_GETMOUSESPEED, 0, ctypes.byref(speed), 0):
+        return 1.0
+    return _MOUSE_SPEED_MULTIPLIER[min(max(speed.value, 1), 20) - 1]
+
+
+def _hotkey_down() -> bool:
+    """True while Ctrl+Alt+F12 is held (``GetAsyncKeyState``: no focus needed)."""
+    return all(_u32.GetAsyncKeyState(vk) & 0x8000 for vk in (VK_CONTROL, VK_MENU, VK_F12))
+
+
+def _send_mouse_input(flags: int, data: int = 0) -> bool:
+    inp = _INPUT(type=INPUT_MOUSE)
+    inp.mi = _MOUSEINPUT(0, 0, data & 0xFFFFFFFF, flags, 0, None)
+    return _u32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT)) == 1
+
+
+def inject_button(code: int, pressed: bool) -> bool:
+    """Replay a captured button edge into Windows with ``SendInput``.
+
+    For the cursor relay: the bridge calls this when the cursor is not over
+    Nimbus's own window, so clicks on the desktop or in the game's menus keep
+    working. Injected input does become Raw Input, so a foreground game sees
+    the button (never the motion). Returns False for codes Windows has no
+    button for.
+    """
+    if not _IS_WINDOWS:
+        return False
+    entry = _INJECT_BUTTONS.get(code)
+    if entry is None:
+        return False
+    down, up, data = entry
+    return _send_mouse_input(down if pressed else up, data)
+
+
+def inject_wheel(horizontal: int, vertical: int) -> bool:
+    """Replay wheel notches into Windows with ``SendInput`` (see :func:`inject_button`)."""
+    if not _IS_WINDOWS:
+        return False
+    ok = True
+    if vertical:
+        ok = _send_mouse_input(MOUSEEVENTF_WHEEL, vertical * WHEEL_DELTA) and ok
+    if horizontal:
+        ok = _send_mouse_input(MOUSEEVENTF_HWHEEL, horizontal * WHEEL_DELTA) and ok
+    return ok
+
+
+def point_in_window(hwnd: int, x: int, y: int) -> bool:
+    """True if the screen point lies inside the window's rectangle.
+
+    Cheap enough for the reader thread; the bridge's relay policy uses it to
+    keep the real cursor off the game window.
+    """
+    if not _IS_WINDOWS or not hwnd:
+        return False
+    rect = wintypes.RECT()
+    if not _u32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return False
+    return rect.left <= x < rect.right and rect.top <= y < rect.bottom
+
+
+def hwnd_at_cursor() -> int:
+    """The top-level window under the cursor, or 0."""
+    if not _IS_WINDOWS:
+        return 0
+    pt = wintypes.POINT()
+    if not _u32.GetCursorPos(ctypes.byref(pt)):
+        return 0
+    h = _u32.WindowFromPoint(pt)
+    if not h:
+        return 0
+    root = _u32.GetAncestor(h, GA_ROOT)
+    return int(root or h)
 
 
 # Instances that currently hold the device (see the safety net at the bottom).
@@ -353,10 +515,22 @@ class MouseIsolation:
             resolution wheels accumulate until a notch is complete.
         on_stopped: ``(reason)`` when isolation ends for any reason, including
             ``"released by driver watchdog"`` when the driver gave the mouse
-            back because this process stopped reading.
-        hotkey: Accepted for API parity and ignored. This class installs no
-            hotkey; the bridge is responsible for wiring ``Ctrl+Alt+F12`` to
-            :meth:`stop` or :func:`stop_all`.
+            back because this process stopped reading, and
+            ``"emergency hotkey"`` for ``Ctrl+Alt+F12``.
+        hotkey: Release on ``Ctrl+Alt+F12`` when True. Polled on the reader
+            thread with ``GetAsyncKeyState`` every ``HOTKEY_POLL_MS`` while a
+            read is parked, so it works with the UI thread stuck and without
+            focus.
+        cursor_relay: When True, the reader thread applies every captured
+            motion packet to the real Windows cursor with ``SetCursorPos``,
+            scaled by the pointer-speed setting. The cursor keeps working
+            everywhere while the game's Raw Input sees nothing. A callable
+            ``(x, y) -> bool`` enables the relay with a policy: it is asked,
+            on the reader thread, whether the cursor may go to that screen
+            point, and refused motion is dropped (the bridge uses this to
+            keep the cursor off the game window). Buttons and wheel are
+            still only reported through the callbacks; see
+            :func:`inject_button`.
     """
 
     def __init__(
@@ -366,11 +540,19 @@ class MouseIsolation:
         on_wheel: Optional[Callable[[int, int], None]] = None,
         on_stopped: Optional[Callable[[str], None]] = None,
         hotkey: bool = True,
+        cursor_relay: Union[bool, Callable[[int, int], bool]] = False,
     ) -> None:
         self._on_motion = on_motion
         self._on_button = on_button
         self._on_wheel = on_wheel
         self._on_stopped = on_stopped
+        self._hotkey = hotkey
+        self._relay = bool(cursor_relay)
+        self._relay_allowed = cursor_relay if callable(cursor_relay) else None
+        self._relay_rem = [0.0, 0.0]       # sub-pixel relay motion carried between packets
+        self._speed = 1.0
+        #: Empty read completions received (driver heartbeat, interface v3).
+        self.ticks = 0
         self._lock = threading.RLock()
         self._active = False
         self._handle: Optional[int] = None
@@ -448,6 +630,9 @@ class MouseIsolation:
             self._devices = [_device_entry(status)]
             self._abs_last.clear()
             self._wheel_rem = [0, 0]
+            self._relay_rem = [0.0, 0.0]
+            self._speed = pointer_speed_multiplier() if self._relay else 1.0
+            self.ticks = 0
             self.stop_reason = ""
             # Everything below stays under the lock so a stop() from another
             # thread cannot run between "_active" and the reader existing.
@@ -455,8 +640,10 @@ class MouseIsolation:
             self._active = True
             _register_instance(self)
             self._thread.start()
-        print("[mouse_isolation_win] isolation on (released by stop(), by closing Nimbus, "
-              "or by the driver watchdog if reads stop)")
+        print("[mouse_isolation_win] isolation on"
+              + (" with cursor relay" if self._relay else "")
+              + " (released by stop(), by closing Nimbus, by the driver watchdog if reads stop"
+              + (", or by Ctrl+Alt+F12)" if self._hotkey else ")"))
         return list(self._devices)
 
     def stop(self, reason: str = "requested") -> None:
@@ -507,21 +694,39 @@ class MouseIsolation:
                 if not ok:
                     err = ctypes.get_last_error()
                     if err == ERROR_IO_PENDING:
-                        # Blocks until the driver completes the read or CancelIoEx aborts it.
-                        if _k32.GetOverlappedResult(handle, ctypes.byref(ov), ctypes.byref(returned), True):
-                            err = 0
-                        else:
-                            err = ctypes.get_last_error()
+                        err = self._wait_read(handle, ov, returned)
+                    if err == _HOTKEY_HIT:
+                        reason = "emergency hotkey"
+                        break
                     if err:
                         reason = _read_failure_reason(err)
                         break
                 n = returned.value
                 if n:
                     self._dispatch(buf, n)
+                else:
+                    # Heartbeat (interface v3): nothing to deliver, the driver
+                    # wants a fresh read to know this process is alive.
+                    self.ticks += 1
         except Exception as exc:
             reason = f"error: {exc}"
         if self._active:
             threading.Thread(target=self.stop, args=(reason,), daemon=True).start()
+
+    def _wait_read(self, handle: int, ov: Any, returned: Any) -> int:
+        """Wait for the parked read, polling the hotkey meanwhile.
+
+        Returns the read's Win32 error (0 on success) or ``_HOTKEY_HIT``.
+        """
+        while True:
+            if _k32.WaitForSingleObject(self._read_event, HOTKEY_POLL_MS) == WAIT_OBJECT_0:
+                if _k32.GetOverlappedResult(handle, ctypes.byref(ov), ctypes.byref(returned), False):
+                    return 0
+                return ctypes.get_last_error()
+            if self._hotkey and self._active and _hotkey_down():
+                _k32.CancelIoEx(handle, ctypes.byref(ov))
+                _k32.GetOverlappedResult(handle, ctypes.byref(ov), ctypes.byref(returned), True)
+                return _HOTKEY_HIT
 
     def _dispatch(self, data: Any, length: int) -> None:
         # ``data`` is the ctypes read buffer itself; unpacking in place avoids
@@ -531,9 +736,14 @@ class MouseIsolation:
             (unit, flags, button_flags, button_data, _raw,
              last_x, last_y, _extra) = _MOUSE_INPUT_DATA.unpack_from(data, i * _MOUSE_INPUT_DATA.size)
             if flags & MOUSE_MOVE_ABSOLUTE:
-                dx, dy = self._absolute_to_delta(unit, flags, last_x, last_y)
+                sx, sy = self._absolute_to_pixels(flags, last_x, last_y)
+                dx, dy = self._absolute_to_delta(unit, sx, sy)
+                if self._relay and (self._relay_allowed is None or self._relay_allowed(int(sx), int(sy))):
+                    _u32.SetCursorPos(int(sx), int(sy))
             else:
                 dx, dy = last_x, last_y
+                if self._relay and (dx or dy):
+                    self._relay_move(dx, dy)
             if dx or dy:
                 self._on_motion(dx, dy)
             if button_flags:
@@ -562,20 +772,49 @@ class MouseIsolation:
         self._wheel_rem[axis] = total - notch * WHEEL_DELTA
         return notch
 
-    def _absolute_to_delta(self, unit: int, flags: int, x: int, y: int) -> Tuple[int, int]:
-        """Convert an absolute position packet to whole pixels of motion.
+    def _relay_move(self, dx: int, dy: int) -> None:
+        """Apply a relative packet to the real cursor, scaled by the pointer speed.
 
-        Absolute devices report 0..65535 across the primary monitor, or across
-        the virtual desktop when ``MOUSE_VIRTUAL_DESKTOP`` is set. The first
-        packet from a unit only records where it is; the sub-pixel remainder
-        is carried in the stored position so slow motion is not lost.
+        ``SetCursorPos`` keeps the cursor inside the screen and inside any
+        ``ClipCursor`` rectangle, so no clamping is done here.
+        """
+        rem = self._relay_rem
+        rem[0] += dx * self._speed
+        rem[1] += dy * self._speed
+        mx, my = int(rem[0]), int(rem[1])   # truncate toward zero, carry the rest
+        if mx == 0 and my == 0:
+            return
+        rem[0] -= mx
+        rem[1] -= my
+        pt = wintypes.POINT()
+        if not _u32.GetCursorPos(ctypes.byref(pt)):
+            return
+        tx, ty = pt.x + mx, pt.y + my
+        if self._relay_allowed is not None and not self._relay_allowed(tx, ty):
+            rem[0] = rem[1] = 0.0           # refused: do not bank the motion either
+            return
+        _u32.SetCursorPos(tx, ty)
+
+    @staticmethod
+    def _absolute_to_pixels(flags: int, x: int, y: int) -> Tuple[float, float]:
+        """Scale an absolute packet's 0..65535 position to screen pixels.
+
+        Absolute devices report across the primary monitor, or across the
+        virtual desktop when ``MOUSE_VIRTUAL_DESKTOP`` is set.
         """
         if flags & MOUSE_VIRTUAL_DESKTOP:
             width, height = _u32.GetSystemMetrics(SM_CXVIRTUALSCREEN), _u32.GetSystemMetrics(SM_CYVIRTUALSCREEN)
         else:
             width, height = _u32.GetSystemMetrics(SM_CXSCREEN), _u32.GetSystemMetrics(SM_CYSCREEN)
-        sx = x * (width or _ABSOLUTE_RANGE) / _ABSOLUTE_RANGE
-        sy = y * (height or _ABSOLUTE_RANGE) / _ABSOLUTE_RANGE
+        return (x * (width or _ABSOLUTE_RANGE) / _ABSOLUTE_RANGE,
+                y * (height or _ABSOLUTE_RANGE) / _ABSOLUTE_RANGE)
+
+    def _absolute_to_delta(self, unit: int, sx: float, sy: float) -> Tuple[int, int]:
+        """Convert an absolute pixel position to whole pixels of motion.
+
+        The first packet from a unit only records where it is; the sub-pixel
+        remainder is carried in the stored position so slow motion is not lost.
+        """
         prev = self._abs_last.get(unit)
         if prev is None:
             self._abs_last[unit] = (sx, sy)
@@ -637,6 +876,9 @@ if __name__ == "__main__":
     parser.add_argument("--status", action="store_true", help="print the driver status and exit")
     parser.add_argument("--grab", type=float, metavar="SECONDS",
                         help="isolate the mouse for N seconds, printing deltas (mouse is captured)")
+    parser.add_argument("--relay", action="store_true",
+                        help="with --grab: keep the real cursor working (cursor relay) and replay "
+                             "clicks and wheel with SendInput; Raw Input consumers see no motion")
     args = parser.parse_args()
 
     if not _IS_WINDOWS:
@@ -665,15 +907,27 @@ if __name__ == "__main__":
 
     def on_button(code, pressed):
         totals["buttons"] += 1
-        print(f"  button 0x{code:x} {'down' if pressed else 'up'}")
+        if args.relay:
+            inject_button(code, pressed)
+        else:
+            print(f"  button 0x{code:x} {'down' if pressed else 'up'}")
+
+    def on_wheel(horizontal, vertical):
+        if args.relay:
+            inject_wheel(horizontal, vertical)
 
     def on_stopped(reason):
         if reason != "cli done":
             print(f"  isolation ended early: {reason}")
 
-    iso = MouseIsolation(on_motion, on_button, on_stopped=on_stopped)
+    iso = MouseIsolation(on_motion, on_button, on_wheel=on_wheel, on_stopped=on_stopped,
+                         cursor_relay=args.relay)
     iso.start()
-    print(f"isolating for {args.grab}s; the desktop cursor should be frozen")
+    if args.relay:
+        print(f"isolating for {args.grab}s with cursor relay; the cursor keeps working everywhere, "
+              f"Raw Input consumers see no motion (pointer speed x{iso._speed})")
+    else:
+        print(f"isolating for {args.grab}s; the desktop cursor should be frozen")
     try:
         deadline = time.monotonic() + args.grab
         while iso.active and time.monotonic() < deadline:
@@ -682,4 +936,5 @@ if __name__ == "__main__":
             print_status(iso.status())
     finally:
         iso.stop("cli done")
-    print(f"summed motion dx={totals['dx']} dy={totals['dy']} button edges={totals['buttons']}")
+    print(f"summed motion dx={totals['dx']} dy={totals['dy']} button edges={totals['buttons']} "
+          f"heartbeat ticks={iso.ticks}")

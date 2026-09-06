@@ -251,6 +251,29 @@ def inject_motion(count: int, step: int, spacing_s: float = 0.004) -> int:
     return sent
 
 
+def move_cursor_setpos(count: int, step: int, spacing_s: float = 0.004) -> int:
+    """Move the cursor with ``SetCursorPos`` in the same +step/-step pattern.
+
+    ``SetCursorPos`` changes the cursor position without generating an input
+    event, so this measures what a Raw Input consumer, a ``WH_MOUSE_LL`` hook
+    and ``WM_MOUSEMOVE`` see when Nimbus relays physical motion this way (the
+    cursor-relay model in WINDOWS_MOUSE_FILTER_PLAN.md). Returns the number of
+    calls that succeeded.
+    """
+    pt = wintypes.POINT()
+    user32.GetCursorPos(ctypes.byref(pt))
+    x, y = pt.x, pt.y
+    made = 0
+    for i in range(count):
+        d = step if i % 2 == 0 else -step
+        x += d
+        y += d
+        if user32.SetCursorPos(x, y):
+            made += 1
+        time.sleep(spacing_s)
+    return made
+
+
 def window_center(hwnd: int) -> tuple:
     r = wintypes.RECT()
     user32.GetWindowRect(hwnd, ctypes.byref(r))
@@ -600,7 +623,7 @@ def run_tester(args: argparse.Namespace) -> int:
             print(f"\n=== game variant target={target} sink={sink} hwnd={game.hwnd} tid={game.tid}", flush=True)
             try:
                 scenarios = build_scenarios(args, game, panel, hook, scratch)
-                for name, setup, teardown, note in scenarios:
+                for name, setup, teardown, note, stimulus in scenarios:
                     bring_to_front(game.hwnd)
                     cx, cy = window_center(game.hwnd)
                     user32.SetCursorPos(cx, cy)
@@ -612,7 +635,7 @@ def run_tester(args: argparse.Namespace) -> int:
                     g0 = game.settle()
                     p0 = panel.snapshot()
                     during = {k: bool(g0.get(k)) for k in ("foreground", "focus", "active", "cursor_over")}
-                    sent = inject_motion(args.moves, args.step)
+                    sent = stimulus(args.moves, args.step)
                     time.sleep(0.35)
                     g1 = game.settle()
                     p1 = panel.snapshot()
@@ -689,12 +712,23 @@ def build_scenarios(args, game: GameProcess, panel: Panel, hook: LLHook, scratch
             p.wait(6.0)
             ctx["note"] = f"blocker exit={p.returncode} (0 means BlockInput succeeded)"
 
+    def hook_count_on(ctx):
+        hook.seen = hook.blocked = 0
+        hook.block = False
+
+    def hook_count_off(ctx):
+        ctx["note"] = f"hook saw {hook.seen} (counting only)"
+
+    # (name, setup, teardown, note, stimulus): the stimulus is what moves the
+    # mouse. SendInput is the physical-motion stand-in; SetCursorPos is how
+    # the cursor-relay model would move the real cursor from captured packets.
     return [
-        ("baseline", no_setup, no_teardown, ""),
-        ("ll_hook_block_all", hook_on, hook_off, ""),
-        ("panel_foreground", panel_fg, game_fg, ""),
-        ("attach_setfocus", attach, detach, ""),
-        ("blockinput", block_on, block_off, ""),
+        ("baseline", no_setup, no_teardown, "", inject_motion),
+        ("ll_hook_block_all", hook_on, hook_off, "", inject_motion),
+        ("panel_foreground", panel_fg, game_fg, "", inject_motion),
+        ("attach_setfocus", attach, detach, "", inject_motion),
+        ("blockinput", block_on, block_off, "", inject_motion),
+        ("setcursorpos", hook_count_on, hook_count_off, "", move_cursor_setpos),
     ]
 
 

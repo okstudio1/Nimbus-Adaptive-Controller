@@ -14,18 +14,26 @@
  *   USHORT UnitId; USHORT Flags; USHORT ButtonFlags; USHORT ButtonData;
  *   ULONG RawButtons; LONG LastX; LONG LastY; ULONG ExtraInformation;
  * A read completes as soon as at least one packet is available. A read that
- * is issued, or still pending, while isolation is off fails with
- * STATUS_DEVICE_NOT_READY (ERROR_NOT_READY, 21, in user mode). That is how a
- * client learns that the watchdog released the mouse; a client that turned
- * isolation off itself sees the same failure on its parked read.
+ * has been parked for NIMBUS_MOUFILTER_TICK_MS with nothing to deliver is
+ * completed with zero bytes (a tick); the client simply issues a new read.
+ * That is the heartbeat: only a read's arrival, or its completion with
+ * packets, counts as client activity, so a client that is frozen or suspended
+ * stops re-issuing and the watchdog gives the mouse back within
+ * NIMBUS_MOUFILTER_WATCHDOG_MS of its last read. A read that is issued, or
+ * still pending, while isolation is off fails with STATUS_DEVICE_NOT_READY
+ * (ERROR_NOT_READY, 21, in user mode). That is how a client learns that the
+ * watchdog released the mouse; a client that turned isolation off itself sees
+ * the same failure on its parked read.
  *
  * Safety: isolation is cleared when the client's handle is cleaned up (crash,
- * kill, exit) and by a watchdog when no read has been pending for
- * NIMBUS_MOUFILTER_WATCHDOG_MS while isolating.
+ * kill, exit) and by a watchdog when no read has arrived for
+ * NIMBUS_MOUFILTER_WATCHDOG_MS while isolating (parked reads are ticked out
+ * first, see above).
  *
  * Interface versions
  *   1  first build: SET_ISOLATION, GET_STATUS, ReadFile delivery
  *   2  reads fail with STATUS_DEVICE_NOT_READY while isolation is off
+ *   3  parked reads are completed empty after NIMBUS_MOUFILTER_TICK_MS (heartbeat)
  */
 #pragma once
 
@@ -33,8 +41,9 @@
 #define NIMBUS_MOUFILTER_SYMLINK_NAME     L"\\DosDevices\\NimbusMouseFilter"
 #define NIMBUS_MOUFILTER_USER_PATH        L"\\\\.\\NimbusMouseFilter"
 
-#define NIMBUS_MOUFILTER_INTERFACE_VERSION 2
+#define NIMBUS_MOUFILTER_INTERFACE_VERSION 3
 #define NIMBUS_MOUFILTER_WATCHDOG_MS       2000
+#define NIMBUS_MOUFILTER_TICK_MS           1000
 
 #ifndef CTL_CODE
 #define FILE_DEVICE_UNKNOWN 0x00000022
