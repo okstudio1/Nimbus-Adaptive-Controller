@@ -111,6 +111,8 @@ Nimbus Adaptive Controller includes **built-in borderless gaming integration** â
 
 **Game compatibility**: Verified with Minecraft, Stardew Valley, Terraria, Skyrim and many others. See [`docs/GAME_COMPATIBILITY.md`](docs/GAME_COMPATIBILITY.md) for the full list.
 
+**Raw Input games** (Elden Ring, most competitive shooters) read the mouse below the layer these tools work at, so the camera still drifts while you use Nimbus. That tier needs a kernel-mode mouse filter, which is in development in [`driver/`](driver/README.md) and not yet part of any release; in development it already lets Full Game Mode take the mouse away from the game while the cursor keeps working on Nimbus and the desktop. The measurements behind that statement are in [`docs/vision/HOST_MODE_ISOLATION.md`](docs/vision/HOST_MODE_ISOLATION.md).
+
 ## Game Focus Mode (Windows)
 
 When playing games that pause or lose input when unfocused, enable **Game Focus Mode** to keep your game running while interacting with Nimbus Adaptive Controller.

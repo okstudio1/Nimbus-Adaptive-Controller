@@ -235,6 +235,12 @@ Nimbus solves this with a built-in borderless-gaming layer (`src/borderless.py`)
 
 The trade-off is that this technique is detectable and could be misclassified by anti-cheat systems. Nimbus does not modify game memory, hook game APIs, or interfere with input on the game's side; it operates entirely on the Windows window/cursor layer, the same layer used by routine accessibility tools. To date no anti-cheat false positives have been reported, but the design choice to operate at the OS layer rather than at the game layer is deliberate and should be preserved.
 
+### 8.1 The Raw Input tier
+
+Cursor liberation and the `WH_MOUSE_LL` hook cover games that read the mouse through the cursor and `WM_MOUSEMOVE`. Games that register for Raw Input (`WM_INPUT`) are a separate tier, and it was measured on Windows 11 25H2 in September 2026 rather than reasoned about: a low-level hook that drops every mouse event leaves `WM_INPUT` untouched, the only user-mode action that stops `WM_INPUT` is taking the foreground away from the game, and Elden Ring then ignores the gamepad as well. Microsoft's HID architecture opens mouse collections exclusively for the Raw Input Manager, so no user-mode process can read or block them. The measurements and the survey of existing drivers are in `docs/vision/HOST_MODE_ISOLATION.md`, sections 8 and 9.
+
+The consequence is architectural: for that tier Nimbus must own the mouse below `win32k`. On Linux that is one `EVIOCGRAB` ioctl (the `linux-uinput-support` branch). On Windows it is a small KMDF upper filter on the mouse class, the Nimbus Mouse Filter in `driver/`, which passes everything through until Nimbus asks for isolation and then hands the packets to Nimbus instead of `mouclass`. On Windows, Nimbus then moves the real cursor itself with `SetCursorPos`, which creates no input event: the cursor keeps working on the desktop and on Nimbus, the game keeps the foreground and its gamepad, and the game's Raw Input stream stays empty (the cursor relay; on Linux, where re-injection would be visible to the game, Nimbus draws its own cursor instead). A test-signed development build was validated on hardware in September 2026: with isolation on, a Raw Input consumer received nothing while the driver captured every packet from the physical mouse, the mouse returned on release, Left 4 Dead 2 with raw input on stayed still under relayed motion, and the real application drove its virtual stick from a captured drag while the game saw nothing. It is not yet attestation-signed, not validated against an anti-cheat title, and not part of any release. Design and status: `docs/vision/WINDOWS_MOUSE_FILTER_PLAN.md`.
+
 ---
 
 ## 9. Game Focus Mode
@@ -297,6 +303,8 @@ The platform is positioned to extend in four directions, each preserving the sam
 **AAC.** The same widget surface that controls a game emits spoken phrases via TTS, navigates AAC vocabulary pages, or fires shortcuts in dedicated AAC software. Windows Eye Control already operates Nimbus today; this direction formalises that capability.
 
 **Research platform.** With opt-in telemetry, Nimbus could function as a research instrument for studying how people with disabilities engage with games, in collaboration with AbleGamers, Shirley Ryan AbilityLab, CMU HCII, and similar institutions.
+
+**Mouse isolation.** Closing the Raw Input tier (§ 8.1) with the Nimbus Mouse Filter on Windows and the `EVIOCGRAB` grab on Linux, so that Elden Ring-class games see only the virtual pad. The bridge half (the isolation API, the click policy, the Isolate Mouse toggle) is shared between platforms; the source of deltas and what happens to the cursor differ (the cursor relay on Windows, a software cursor on Linux).
 
 ---
 
