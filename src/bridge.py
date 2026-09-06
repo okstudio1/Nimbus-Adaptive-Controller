@@ -1509,6 +1509,8 @@ class ControllerBridge(QObject):
           4. Mouse isolation (Windows with the filter driver installed: the
              game stops seeing the physical mouse, the real cursor keeps
              working through the cursor relay, never over the game window)
+          5. Bring the game to the foreground, so its gamepad counts and the
+             user need not click it first
         
         Args:
             game_hwnd: HWND of the game window.

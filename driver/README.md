@@ -30,8 +30,11 @@ v3 (heartbeat ticks, so a frozen Nimbus loses the mouse within 2 s) and the
 cursor relay in the client were written the same evening; v3 is installed and
 passed the probe 17/17 under Driver Verifier, including the frozen-client
 release. The relay is wired into the bridge's Full Game Mode, and the real
-Nimbus app passed the relay harness 7/7 against the fake Raw Input game
-(`tests/probe_nimbus_relay_windows.py`). Not attestation-signed, not
+Nimbus app passed the relay harness 8/8 against the fake Raw Input game
+(`tests/probe_nimbus_relay_windows.py`), and a first hands-on run of Game
+Mode through TeamViewer worked once two usability gaps were closed (the game
+comes to the foreground by itself; a cursor found over the game is parked
+onto Nimbus). Not attestation-signed, not
 validated against an anti-cheat game, not in any release. Do not ship it yet.
 
 ## Layout
