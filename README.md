@@ -6,6 +6,9 @@
 
 **Nimbus Adaptive Controller** is a free, open-source modular virtual controller for Windows. It transforms mouse input into virtual joystick commands via [vJoy](http://vjoystick.sourceforge.net/) (DirectInput) or [ViGEmBus](https://github.com/nefarius/ViGEmBus) (Xbox 360 XInput emulation).
 
+It also runs on Linux from source, emitting an Xbox 360-compatible pad through
+`uinput` instead of ViGEmBus. See [Option 3: Run on Linux](#option-3-run-on-linux-from-source).
+
 Users build their own controller layout by dragging, dropping, and resizing widgets — joysticks, buttons, sliders, D-pads, and steering wheels — onto a customizable canvas. Every widget's axis mapping, sensitivity curve, deadzone, and button behavior is independently configurable.
 
 **Designed with accessibility in mind.** Nimbus Adaptive Controller is a free software alternative to the Xbox Adaptive Controller, enabling people with mobility limitations to build custom controller layouts without expensive hardware. It works equally well for adaptive gaming, UAV/rover control via Mission Planner, or any application that expects joystick input.
@@ -210,6 +213,59 @@ Nimbus Adaptive Controller is and will remain **free for all accessibility use**
    Notes:
    - The Qt Quick (QML) UI is the default and primary UI.
    - Settings persist via `controller_config.json`.
+
+### Option 3: Run on Linux (From Source)
+
+Linux is supported from source. There is no vJoy on Linux, so Nimbus outputs an
+Xbox 360-compatible pad through the kernel's `uinput` device instead. Games,
+Steam, Proton, and SDL see a standard gamepad on `/dev/input/js*`.
+
+1. **Install the system dependency**:
+   ```bash
+   sudo apt install libevdev2          # Debian/Ubuntu
+   # sudo dnf install libevdev         # Fedora
+   # sudo pacman -S libevdev           # Arch
+   ```
+
+2. **Make sure `/dev/uinput` exists and your user can write to it**:
+   ```bash
+   sudo modprobe uinput
+   echo uinput | sudo tee /etc/modules-load.d/uinput.conf     # load on boot
+
+   sudo groupadd -f uinput
+   sudo usermod -aG uinput "$USER"
+   echo 'KERNEL=="uinput", GROUP="uinput", MODE="0660", OPTIONS+="static_node=uinput"' \
+     | sudo tee /etc/udev/rules.d/99-nimbus-uinput.rules
+   sudo udevadm control --reload-rules && sudo udevadm trigger
+   ```
+   Log out and back in for the group change to apply. Some desktops
+   (systemd-logind `uaccess`) already grant the logged-in user access, in which
+   case this step is a no-op.
+
+3. **Clone and run**:
+   ```bash
+   git clone https://github.com/owenpkent/Nimbus-Adaptive-Controller.git
+   cd Nimbus-Adaptive-Controller
+   ./run.sh          # or: python3 run.py
+   ```
+   `run.sh` / `run.py` create `venv/`, install `requirements.txt`, and launch the
+   Qt Quick UI. `pyvjoy` is skipped automatically off Windows.
+
+4. **Verify the virtual pad**:
+   ```bash
+   ls /dev/input/js*                   # a new device appears while Nimbus runs
+   sudo evtest                         # look for "Xbox 360 Controller"
+   ```
+
+**What does not work on Linux** (Win32-only, hidden or disabled in the UI):
+Borderless Gaming, Game Focus Mode, and Full Game Mode. These depend on
+`ClipCursor`, `WS_EX_NOACTIVATE`, and low-level mouse hooks, none of which have
+a portable equivalent. Everything else (layouts, profiles, curves, deadzones,
+smoothing, macros, telemetry, accounts) behaves the same as on Windows.
+
+Tested on Ubuntu 22.04 under X11. On Wayland the UI renders, but compositor
+policy restricts always-on-top and programmatic window positioning; see
+[`docs/vision/LINUX_PROBE_PLAN.md`](docs/vision/LINUX_PROBE_PLAN.md).
 
 ### Building Your Own Executable
 

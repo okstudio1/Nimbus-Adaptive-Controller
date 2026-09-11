@@ -40,6 +40,47 @@ def get_venv_python():
     else:
         return Path("venv") / "bin" / "python"
 
+def required_packages():
+    """Return the import names that must succeed for this platform.
+
+    vJoy output is Windows-only (pyvjoy loads a Windows DLL and calls
+    sys.exit() at import time elsewhere), so on Linux/macOS the gamepad
+    backend to probe is vgamepad instead.
+    """
+    if sys.platform == "win32":
+        return ['pyvjoy', 'numpy', 'PySide6']
+    return ['vgamepad', 'numpy', 'PySide6']
+
+
+def check_uinput_access():
+    """Warn if /dev/uinput is missing or not writable (Linux only).
+
+    Not fatal: the app still starts and the UI reports the controller as
+    disconnected, but nothing will reach a game until this is fixed.
+    """
+    if not sys.platform.startswith("linux"):
+        return
+
+    uinput = Path("/dev/uinput")
+    if not uinput.exists():
+        print("WARNING: /dev/uinput does not exist.")
+        print("  Load the kernel module:  sudo modprobe uinput")
+        print("  Make it permanent:       echo uinput | sudo tee /etc/modules-load.d/uinput.conf")
+        print()
+        return
+
+    if not os.access(uinput, os.W_OK):
+        print("WARNING: /dev/uinput exists but is not writable by this user.")
+        print("  Virtual controller output will not work until you grant access:")
+        print("    sudo groupadd -f uinput")
+        print(f"    sudo usermod -aG uinput {os.environ.get('USER', 'YOUR_USER')}")
+        print("    echo 'KERNEL==\"uinput\", GROUP=\"uinput\", MODE=\"0660\", OPTIONS+=\"static_node=uinput\"' \\")
+        print("      | sudo tee /etc/udev/rules.d/99-nimbus-uinput.rules")
+        print("    sudo udevadm control --reload-rules && sudo udevadm trigger")
+        print("  Then log out and back in.")
+        print()
+
+
 def check_dependencies():
     """Check if required packages are installed in virtual environment."""
     venv_python = get_venv_python()
@@ -48,13 +89,13 @@ def check_dependencies():
         print("ERROR: Virtual environment Python not found")
         return False
     
-    required_packages = ['pyvjoy', 'numpy', 'PySide6']
+    packages = required_packages()
     
     # Check if packages are installed
     try:
         result = subprocess.run([
             str(venv_python), '-c', 
-            '; '.join([f'import {pkg}' for pkg in required_packages])
+            '; '.join([f'import {pkg}' for pkg in packages])
         ], capture_output=True, text=True)
         
         if result.returncode != 0:
@@ -117,6 +158,9 @@ def main():
         input("Press Enter to exit...")
         return 1
     
+    # Linux: warn early if the virtual controller device is unreachable
+    check_uinput_access()
+
     # Launch the Qt Quick (QML) UI by default
     target_module = "src.qt_qml_app"
 
@@ -131,10 +175,16 @@ def main():
         return 0
     except Exception as e:
         print(f"\nERROR: {e}")
-        print("\nIf this is a VJoy error, make sure:")
-        print("1. VJoy driver is installed")
-        print("2. VJoy device #1 is configured with 6+ axes")
-        print("3. VJoy device is enabled")
+        if sys.platform == "win32":
+            print("\nIf this is a VJoy error, make sure:")
+            print("1. VJoy driver is installed")
+            print("2. VJoy device #1 is configured with 6+ axes")
+            print("3. VJoy device is enabled")
+        else:
+            print("\nIf this is a controller error, make sure:")
+            print("1. The uinput kernel module is loaded (sudo modprobe uinput)")
+            print("2. /dev/uinput is writable by your user (see the udev rule above)")
+            print("3. libevdev is installed (sudo apt install libevdev2)")
         input("Press Enter to exit...")
         return 1
 

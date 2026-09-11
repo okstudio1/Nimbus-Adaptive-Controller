@@ -1,6 +1,10 @@
-pyvjoy==1.0.1
+# vJoy (DirectInput) output is Windows-only: pyvjoy ships a Windows DLL and
+# calls sys.exit() at import time on any other platform.
+pyvjoy==1.0.1; sys_platform == "win32"
 numpy>=1.24.0
 PySide6>=6.6.0
+# vgamepad drives ViGEmBus on Windows and /dev/uinput (via libevdev) on Linux.
+# On Linux it also needs the system library: sudo apt install libevdev2
 vgamepad>=0.1.0
 pyinstaller>=6.0.0
 httpx>=0.27.0

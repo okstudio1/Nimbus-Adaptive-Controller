@@ -2,8 +2,15 @@
 ViGEmBus interface wrapper for emulating Xbox 360 controllers.
 This provides XInput-compatible virtual controllers that work with modern games
 like No Man's Sky that don't support DirectInput (vJoy).
+
+The same ``vgamepad`` API backs two very different drivers: ViGEmBus on
+Windows and ``/dev/uinput`` (via libevdev) on Linux. The control surface is
+identical on both -- 4 axes, 2 triggers, 14 buttons -- so only the setup
+diagnostics below are platform-specific.
 """
 
+import os
+import sys
 import time
 import threading
 from typing import Optional, Dict, Any
@@ -17,7 +24,50 @@ except ImportError as e:
     VIGEM_AVAILABLE = False
     print(f"Warning: vgamepad not available: {e}")
     print("Install with: pip install vgamepad")
-    print("This will also install the ViGEmBus driver for Xbox controller emulation")
+    if sys.platform == "win32":
+        print("This will also install the ViGEmBus driver for Xbox controller emulation")
+    else:
+        print("On Linux it also needs libevdev: sudo apt install libevdev2")
+
+
+UINPUT_DEVICE = "/dev/uinput"
+
+
+def check_uinput_access() -> Optional[str]:
+    """Return a human-readable reason ``/dev/uinput`` is unusable, or ``None``.
+
+    On Linux the virtual pad is created through ``/dev/uinput``, which is the
+    direct equivalent of the ViGEmBus driver on Windows. Returns ``None`` on
+    non-Linux platforms and whenever the device is present and writable.
+
+    Returns
+    -------
+    Optional[str]
+        ``None`` if uinput is usable (or irrelevant on this platform),
+        otherwise a short description of what is wrong.
+    """
+    if not sys.platform.startswith("linux"):
+        return None
+    if not os.path.exists(UINPUT_DEVICE):
+        return f"{UINPUT_DEVICE} does not exist (uinput kernel module not loaded)"
+    if not os.access(UINPUT_DEVICE, os.W_OK):
+        return f"{UINPUT_DEVICE} is not writable by this user"
+    return None
+
+
+def _print_linux_uinput_help() -> None:
+    """Print the udev/permissions fix for an unreachable ``/dev/uinput``."""
+    user = os.environ.get("USER", "YOUR_USER")
+    print("\nTo enable virtual controller output on Linux:")
+    print("1. Load the kernel module:  sudo modprobe uinput")
+    print("   (permanent: echo uinput | sudo tee /etc/modules-load.d/uinput.conf)")
+    print("2. Grant your user access to it:")
+    print("     sudo groupadd -f uinput")
+    print(f"     sudo usermod -aG uinput {user}")
+    print("     echo 'KERNEL==\"uinput\", GROUP=\"uinput\", MODE=\"0660\", "
+          "OPTIONS+=\"static_node=uinput\"' | sudo tee /etc/udev/rules.d/99-nimbus-uinput.rules")
+    print("     sudo udevadm control --reload-rules && sudo udevadm trigger")
+    print("3. Log out and back in, then restart this application")
 
 
 class ViGEmInterface:
@@ -58,33 +108,53 @@ class ViGEmInterface:
         self._initialize_vigem()
     
     def _initialize_vigem(self) -> None:
-        """Initialize ViGEmBus Xbox 360 controller."""
+        """Initialize the virtual Xbox 360 controller (ViGEmBus or uinput)."""
         if not VIGEM_AVAILABLE:
             print("ViGEm interface not available - running in simulation mode")
             print("\nTo enable Xbox controller emulation:")
             print("1. Run: pip install vgamepad")
-            print("2. This will prompt to install the ViGEmBus driver")
-            print("3. Accept the driver installation")
-            print("4. Restart this application")
+            if sys.platform == "win32":
+                print("2. This will prompt to install the ViGEmBus driver")
+                print("3. Accept the driver installation")
+                print("4. Restart this application")
+            else:
+                print("2. Install libevdev: sudo apt install libevdev2")
+                print("3. Restart this application")
             return
-        
+
+        # Linux: fail fast with an actionable message instead of a bare errno
+        uinput_problem = check_uinput_access()
+        if uinput_problem:
+            print(f"[ERROR] Cannot create virtual controller: {uinput_problem}")
+            _print_linux_uinput_help()
+            self.is_connected = False
+            self.gamepad = None
+            return
+
         try:
             print("Creating virtual Xbox 360 controller...")
             self.gamepad = vg.VX360Gamepad()
             self.is_connected = True
             print("[OK] Virtual Xbox 360 controller created successfully")
-            print("Games should now see this as 'Xbox 360 Controller for Windows'")
-            
+            if sys.platform == "win32":
+                print("Games should now see this as 'Xbox 360 Controller for Windows'")
+            else:
+                print("Games (and Steam Input) should now see an 'Xbox 360 Controller' "
+                      "on /dev/input/js*")
+
             # Reset to center position
             self._reset_axes()
             
         except Exception as e:
             print(f"[ERROR] Failed to create virtual Xbox controller: {e}")
-            print("\nTroubleshooting steps:")
-            print("1. Make sure ViGEmBus driver is installed")
-            print("2. Try running: pip install vgamepad --force-reinstall")
-            print("3. Restart your computer after driver installation")
-            print("4. Run this application as administrator")
+            if sys.platform == "win32":
+                print("\nTroubleshooting steps:")
+                print("1. Make sure ViGEmBus driver is installed")
+                print("2. Try running: pip install vgamepad --force-reinstall")
+                print("3. Restart your computer after driver installation")
+                print("4. Run this application as administrator")
+            else:
+                _print_linux_uinput_help()
             self.is_connected = False
             self.gamepad = None
     

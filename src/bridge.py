@@ -44,7 +44,7 @@ from PySide6.QtCore import QObject, Slot, Signal, Property, QTimer
 from PySide6.QtGui import QCursor, QWindow
 
 from .config import ControllerConfig
-from .vjoy_interface import VJoyInterface
+from .vjoy_interface import VJoyInterface, VJOY_AVAILABLE
 from .qt_dialogs import AxisMappingQt, JoystickSettingsQt, ButtonSettingsQt, SliderSettingsQt, AxisSettingsQt
 
 # Try to import ViGEm for Xbox controller emulation (preferred for modern games)
@@ -201,6 +201,17 @@ class ControllerBridge(QObject):
                 self._vigem = ViGEmInterface(self._config)
             self._use_vigem = True
             # Also init vJoy as fallback
+            if self._vjoy is None:
+                self._vjoy = VJoyInterface(self._config)
+        elif sys.platform != "win32" and VIGEM_AVAILABLE:
+            # vJoy is a Windows-only driver, so a vJoy-preferring profile has no
+            # working backend on Linux/macOS. Use ViGEm (uinput on Linux) rather
+            # than leaving the user with a silently disconnected controller.
+            print(f"vJoy is not available on {sys.platform} - using ViGEm output "
+                  f"for the '{layout_type}' profile")
+            if self._vigem is None:
+                self._vigem = ViGEmInterface(self._config)
+            self._use_vigem = True
             if self._vjoy is None:
                 self._vjoy = VJoyInterface(self._config)
         else:
@@ -678,6 +689,28 @@ class ControllerBridge(QObject):
         """Check if ViGEm (vgamepad) is available on this system."""
         return VIGEM_AVAILABLE
 
+    @Slot(result=bool)
+    def isVJoyAvailable(self) -> bool:  # noqa: N802
+        """Check if vJoy (DirectInput) output is available on this system.
+
+        Always ``False`` off Windows: vJoy is a Windows kernel driver with no
+        Linux or macOS equivalent.
+        """
+        return VJOY_AVAILABLE and sys.platform == "win32"
+
+    @Slot(result=bool)
+    def isFullGameModeAvailable(self) -> bool:  # noqa: N802
+        """Check if Full Game Mode is supported on this system.
+
+        Full Game Mode combines borderless conversion, ``ClipCursor`` release,
+        and the low-level mouse hook, all of which are Win32-only.
+        """
+        return (
+            WINDOW_UTILS_AVAILABLE
+            and MOUSE_HIDER_AVAILABLE
+            and sys.platform == "win32"
+        )
+
     @Slot(str)
     def setOutputMode(self, mode: str) -> None:  # noqa: N802
         """Switch output device. mode is 'vjoy' or 'vigem'."""
@@ -689,6 +722,13 @@ class ControllerBridge(QObject):
             return
         if want_vigem and not VIGEM_AVAILABLE:
             print("Cannot switch to ViGEm — vgamepad not installed")
+            return
+        if not want_vigem and not self.isVJoyAvailable():
+            if sys.platform != "win32":
+                print(f"Cannot switch to vJoy — vJoy is Windows-only, "
+                      f"unavailable on {sys.platform}")
+            else:
+                print("Cannot switch to vJoy — vJoy driver not installed")
             return
         # Initialize the target interface if needed
         if want_vigem and self._vigem is None:
@@ -1628,6 +1668,16 @@ class ControllerBridge(QObject):
             except Exception:
                 result["driver_installed"] = False
                 result["driver_query"] = "query failed"
+        elif _sys.platform.startswith("linux"):
+            # /dev/uinput is the Linux equivalent of the ViGEmBus driver
+            try:
+                from .vigem_interface import check_uinput_access
+                problem = check_uinput_access()
+                result["driver_installed"] = problem is None
+                result["driver_query"] = problem or "/dev/uinput writable"
+            except Exception:
+                result["driver_installed"] = False
+                result["driver_query"] = "uinput check failed"
         return result
 
     # =================================================================

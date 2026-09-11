@@ -578,6 +578,7 @@ ApplicationWindow {
                     text: qsTr("vJoy (DirectInput)")
                     checkable: true
                     checked: root.outputMode === "vjoy"
+                    enabled: controller ? controller.isVJoyAvailable() : false
                     onTriggered: {
                         outputDeviceMenu.close()
                         settingsMenu.close()
@@ -727,7 +728,7 @@ ApplicationWindow {
             padding: 20
             
             Image {
-                source: "qrc:/logo.png"
+                source: Qt.resolvedUrl("../logo.png")
                 width: 80
                 height: 80
                 anchors.horizontalCenter: parent.horizontalCenter
@@ -1169,6 +1170,7 @@ ApplicationWindow {
                     text: "vJoy (DirectInput)"
                     checkable: true
                     checked: root.outputMode === "vjoy"
+                    enabled: controller ? controller.isVJoyAvailable() : false
                     onTriggered: {
                         if (controller) controller.setOutputMode("vjoy")
                     }
@@ -1237,18 +1239,19 @@ ApplicationWindow {
                 }
             }
 
-            // Divider
+            // Divider (only meaningful when both neighbours are shown)
             Rectangle {
                 width: 1; height: 12
                 color: "#333"
                 anchors.verticalCenter: parent.verticalCenter
-                visible: root.layoutType === "custom"
+                visible: root.layoutType === "custom" && gameModeRibbonBtn.visible
             }
 
-            // Game Mode button
+            // Game Mode button (Win32-only: borderless + cursor release + mouse hook)
             Rectangle {
                 id: gameModeRibbonBtn
-                width: gameModeRibbonRow.implicitWidth + 16
+                visible: controller ? controller.isFullGameModeAvailable() : false
+                width: visible ? gameModeRibbonRow.implicitWidth + 16 : 0
                 height: parent.height
                 color: gameModeRibbonMa.containsMouse
                     ? (root.gameModeActive ? "#0a2a18" : "#1e2020")

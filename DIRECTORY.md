@@ -11,6 +11,7 @@
 |------|---------|
 | `run.py` | **Main entry point** — Run this to start the app in development |
 | `run.bat` | Windows batch launcher (activates venv, runs run.py) |
+| `run.sh` | Linux/macOS shell launcher (runs run.py) |
 | `README.md` | Project overview, features, installation, usage |
 | `DIRECTORY.md` | This file — project structure guide |
 | `CHANGELOG.md` | Version history with semantic versioning |

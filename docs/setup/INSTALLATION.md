@@ -1,5 +1,8 @@
 # Installation Guide
 
+Windows is the primary platform. Linux is supported from source — jump to
+[Linux Installation](#linux-installation).
+
 ## Prerequisites
 
 - **Windows 10/11** (64-bit)
@@ -111,8 +114,82 @@ build_tools\sign_exe.bat dist\Nimbus-Adaptive-Controller-Setup-X.Y.Z.exe
    - At least 128 buttons are enabled
 4. Launch Nimbus Adaptive Controller — it should detect vJoy automatically
 
+## Linux Installation
+
+There is no vJoy on Linux. Nimbus outputs an Xbox 360-compatible gamepad through
+the kernel `uinput` device instead, which Steam, Proton, SDL, and native games
+see as a standard pad on `/dev/input/js*`. The Qt Quick UI, profiles, layouts,
+curves, deadzones, and smoothing are unchanged.
+
+### Prerequisites
+
+- Python 3.8+
+- `libevdev` (`sudo apt install libevdev2`, `sudo dnf install libevdev`, `sudo pacman -S libevdev`)
+- A writable `/dev/uinput`
+
+### Setup
+
+```bash
+git clone https://github.com/owenpkent/Nimbus-Adaptive-Controller.git
+cd Nimbus-Adaptive-Controller
+./run.sh          # equivalent to: python3 run.py
+```
+
+`run.py` creates `venv/`, installs `requirements.txt` (skipping the Windows-only
+`pyvjoy`), checks `/dev/uinput`, and launches the QML UI.
+
+### uinput Setup
+
+`/dev/uinput` is the Linux equivalent of the ViGEmBus driver. Without write
+access, Nimbus starts but the status dot stays red and nothing reaches a game.
+
+```bash
+# 1. Load the kernel module (and make it load at boot)
+sudo modprobe uinput
+echo uinput | sudo tee /etc/modules-load.d/uinput.conf
+
+# 2. Grant your user write access
+sudo groupadd -f uinput
+sudo usermod -aG uinput "$USER"
+echo 'KERNEL=="uinput", GROUP="uinput", MODE="0660", OPTIONS+="static_node=uinput"' \
+  | sudo tee /etc/udev/rules.d/99-nimbus-uinput.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+
+# 3. Log out and back in, then verify
+ls -l /dev/uinput
+```
+
+On desktops where systemd-logind applies a `uaccess` ACL, the logged-in user
+already has access and step 2 is unnecessary.
+
+### Verifying Output
+
+With Nimbus running:
+
+```bash
+ls /dev/input/js*     # a new joystick node appears
+sudo evtest           # should list "Xbox 360 Controller"
+```
+
+The control surface matches the Windows ViGEm backend exactly: 4 axes,
+2 triggers, 14 buttons (D-pad on `ABS_HAT0X/Y`).
+
+### Unsupported on Linux
+
+Borderless Gaming, Game Focus Mode, and Full Game Mode are Win32-only — they
+depend on `ClipCursor`, `WS_EX_NOACTIVATE`, and low-level mouse hooks. The UI
+hides or disables those controls on Linux rather than offering dead buttons.
+
+Verified on Ubuntu 22.04 / X11. Under Wayland the UI renders but the compositor
+restricts always-on-top and programmatic positioning; see
+[`docs/vision/LINUX_PROBE_PLAN.md`](../vision/LINUX_PROBE_PLAN.md).
+
 ## Troubleshooting
 
 - **"Failed to initialize VJoy device 1"** — vJoy driver not installed, or another application is using device 1. Close other vJoy apps and retry.
 - **"Cannot acquire vJoy Device because it is not in VJD_STAT_FREE"** — Previous instance of Nimbus Adaptive Controller didn't shut down cleanly. Wait a few seconds and try again, or restart vJoy via Device Manager.
 - **SmartScreen warning** — The executable must be signed with an EV code certificate. Unsigned builds will trigger SmartScreen warnings.
+- **Linux: "/dev/uinput is not writable by this user"** — Follow [uinput Setup](#uinput-setup). The group change needs a fresh login to take effect.
+- **Linux: "/dev/uinput does not exist"** — The kernel module is not loaded. Run `sudo modprobe uinput`.
+- **Linux: "vgamepad not available"** — `libevdev` is missing. Install `libevdev2` (Debian/Ubuntu) or `libevdev` (Fedora/Arch).
+- **Linux: vJoy menu entry is greyed out** — Expected. vJoy is a Windows kernel driver; use the Xbox 360 (ViGEm) output mode.

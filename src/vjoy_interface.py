@@ -1,8 +1,13 @@
 """
 VJoy interface wrapper for sending virtual controller signals.
 Provides a safe and stable interface to the VJoy driver.
+
+vJoy is a Windows-only driver. On other platforms this interface stays in
+simulation mode and the bridge uses :class:`~src.vigem_interface.ViGEmInterface`
+instead (ViGEmBus on Windows, ``/dev/uinput`` on Linux).
 """
 
+import sys
 import time
 import threading
 from typing import Optional, Tuple, Dict, Any
@@ -25,10 +30,14 @@ try:
         VJOY_AVAILABLE = False
         VJOY_API_VERSION = "none"
         print("Warning: PyVjoy version incompatible. Missing VJoyDevice class.")
-except ImportError as e:
+except (Exception, SystemExit) as e:
+    # pyvjoy raises SystemExit (not ImportError) when it cannot load
+    # vJoyInterface.dll, which happens on every non-Windows platform. Catching
+    # SystemExit too lets a stale install degrade gracefully instead of killing
+    # the process at import time.
     VJOY_AVAILABLE = False
     VJOY_API_VERSION = "none"
-    print(f"Warning: PyVjoy not available: {e}")
+    print(f"Warning: PyVjoy not available: {e!r}")
 
 
 class VJoyInterface:
@@ -87,10 +96,15 @@ class VJoyInterface:
         
         if not VJOY_AVAILABLE:
             print("VJoy interface not available - running in simulation mode")
-            print("To enable VJoy:")
-            print("1. Download and install VJoy driver from: http://vjoystick.sourceforge.net/")
-            print("2. Configure VJoy device #1 with at least 6 axes")
-            print("3. Ensure the device is enabled in VJoy configuration")
+            if sys.platform == "win32":
+                print("To enable VJoy:")
+                print("1. Download and install VJoy driver from: http://vjoystick.sourceforge.net/")
+                print("2. Configure VJoy device #1 with at least 6 axes")
+                print("3. Ensure the device is enabled in VJoy configuration")
+            else:
+                print(f"vJoy is Windows-only and has no {sys.platform} equivalent.")
+                print("Use the Xbox 360 (ViGEm) output mode instead - on Linux it emits a "
+                      "standard gamepad through /dev/uinput.")
             return
         
         try:
