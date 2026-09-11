@@ -727,7 +727,7 @@ ApplicationWindow {
             padding: 20
             
             Image {
-                source: "qrc:/logo.png"
+                source: Qt.resolvedUrl("../logo.png")
                 width: 80
                 height: 80
                 anchors.horizontalCenter: parent.horizontalCenter
