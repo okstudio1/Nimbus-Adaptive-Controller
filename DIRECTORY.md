@@ -188,7 +188,8 @@ docs/
 │   ├── HOST_MODE_ISOLATION.md   # Raw Input tier: options, Windows measurements, prior art
 │   ├── WINDOWS_MOUSE_FILTER_PLAN.md  # The kernel filter design and status
 │   ├── PAD_BUS_FORK_PLAN.md     # Forking and modernizing ViGEmBus; the client first, the driver on a gate
-│   └── LINUX_PROBE_PLAN.md      # The Linux EVIOCGRAB experiment
+│   ├── LINUX_PROBE_PLAN.md      # The Linux EVIOCGRAB experiment
+│   └── LINUX_GAMING_PROPOSAL.md # A Linux/X11 port of Nimbus; a separate platform track
 ├── setup/                       # Installation & configuration
 │   ├── INSTALLATION.md          # Install guide, vJoy setup
 │   ├── PROFILES.md              # Profile system, save locations
