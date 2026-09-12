@@ -22,8 +22,8 @@
                     "axis": "z"
                 },
                 "sensitivity": 50.0,
-                "deadzone": 5.0,
-                "extremity_deadzone": 2.0
+                "dead_zone": 5.0,
+                "extremity_dead_zone": 2.0
             },
             {
                 "id": "rt_trigger",
@@ -38,8 +38,8 @@
                     "axis": "rz"
                 },
                 "sensitivity": 50.0,
-                "deadzone": 5.0,
-                "extremity_deadzone": 2.0
+                "dead_zone": 5.0,
+                "extremity_dead_zone": 2.0
             },
             {
                 "id": "btn_lb",
@@ -82,8 +82,8 @@
                 "click_button_id": 9,
                 "vigem_click_button": "LEFT_THUMB",
                 "sensitivity": 50.0,
-                "deadzone": 10.0,
-                "extremity_deadzone": 5.0
+                "dead_zone": 10.0,
+                "extremity_dead_zone": 5.0
             },
             {
                 "id": "dpad",
@@ -192,8 +192,8 @@
                 "click_button_id": 10,
                 "vigem_click_button": "RIGHT_THUMB",
                 "sensitivity": 50.0,
-                "deadzone": 10.0,
-                "extremity_deadzone": 5.0
+                "dead_zone": 10.0,
+                "extremity_dead_zone": 5.0
             },
             {
                 "id": "btn_ls",

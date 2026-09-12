@@ -362,4 +362,4 @@ When a known adaptive device is detected, Nimbus could:
 - [AAC Integration](AAC_INTEGRATION.md) — hardware devices used for AAC (switch access, eye gaze)
 - [Modular Control Surface](MODULAR_CONTROL_SURFACE.md) — hardware integration extends to non-gaming apps
 - [Voice Command Integration](../distribution/VOICE_COMMAND.md) — voice augments physical hardware
-- [Spectator+ Concept](../distribution/SPECTATOR_PLUS.md) — AI assist layers over physical hardware input
+- [Spectator+ v0 (Game Test Harness, section 4.7)](GAME_TEST_HARNESS.md): scripted primitives through the bridge, the assist layer that would sit over physical hardware input

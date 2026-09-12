@@ -20,14 +20,12 @@ Item {
     property bool autoCenter: false         // Joystick/Wheel: auto-return to center when mouse stops (locked mode)
     property int autoCenterDelay: 5          // Joystick: ms to wait before auto-return starts (1-10)
     property real lockSensitivity: 4.0       // Joystick: lock mode sensitivity (1-10 UI, actual multiplier = value * 2)
-    property real tremorFilter: 0.0          // Joystick: tremor filter strength (0=off, 1-10=increasing smoothing)
-    property real sensitivity: 50.0        // Axis sensitivity % (0-100, 50 = linear, matches Settings menu)
-    property real deadZone: 0.0            // Axis dead zone % (0-100, matches Settings menu)
-    property real extremityDeadZone: 5.0   // Extremity dead zone % (0-100, matches Settings menu)
+    property real travelPx: 0                // Joystick: mouse pixels for full deflection; 0 = the drawn radius
+    property string modifier: "none"         // Button: "none" sends a gamepad button, "precision" holds the aim modifier
 
-    // Per-axis inversion (joystick only)
-    property bool invert_x: false           // Flip left/right direction
-    property bool invert_y: false           // Flip up/down direction (on top of the default screen-Y negation)
+    // Shaping (sensitivity, deadzones, anti-deadzone, tremor filter, precision
+    // gain, inversion) lives in the bridge, which reads it from the profile by
+    // widget id. This component sends raw geometry only.
 
     // Macro mode properties (joystick only)
     property bool macroMode: false          // When true, joystick acts as macro input instead of analog stick
@@ -77,37 +75,6 @@ Item {
 
     // Snap helper
     function snap(v) { return gridSnap > 0 ? Math.round(v / gridSnap) * gridSnap : v }
-
-    // Apply sensitivity curve matching Settings menu (apply_joystick_dialog_curve)
-    // All params are percentages 0-100
-    function _applyCurve(val) {
-        var sens = root.sensitivity / 100.0      // 0..1, 0.5 = linear
-        var dz = (root.deadZone / 100.0) * 0.25  // 0..0.25 of range
-        var edz = root.extremityDeadZone / 100.0 // 0..1 fraction
-
-        var v = val
-        if (Math.abs(v) < dz) return 0.0
-
-        var sign = v >= 0 ? 1.0 : -1.0
-        var absInput = Math.abs(v)
-        var availRange = 1.0 - dz
-        var normalized = (absInput - dz) / Math.max(1e-6, availRange)
-
-        var output
-        if (Math.abs(sens - 0.5) < 1e-9) {
-            output = normalized                               // linear
-        } else if (sens < 0.5) {
-            var power = 1.0 + (0.5 - sens) * 6.0              // up to 4.0
-            output = Math.pow(normalized, power)
-        } else {
-            var power2 = 1.0 - (sens - 0.5) * 1.8            // down to 0.1
-            output = Math.pow(normalized, Math.max(0.1, power2))
-        }
-
-        if (edz > 0) output *= (1.0 - edz)                    // scale max output
-
-        return output * sign
-    }
 
     // ==================== EDIT MODE OVERLAY ====================
     // Selection border when in edit mode
@@ -455,28 +422,16 @@ Item {
                     return
                 }
 
-                // Normal mode: send axis values
-                nx = root._applyCurve(nx)
-                ny = root._applyCurve(ny)
-                var axisX = root.mapping["axis_x"] || ""
-                var axisY = root.mapping["axis_y"] || ""
-                var hasX = axisX && axisX !== "none"
-                var hasY = axisY && axisY !== "none"
-                // ny is screen-down=positive; controller Y is up=positive — always negate
-                // Then apply optional per-axis inversion from widget config
-                var outX = root.invert_x ? -nx : nx
-                var outY = root.invert_y ? ny : -ny
-                if (hasX || hasY) {
-                    if (axisX === "x" && axisY === "y") {
-                        controller.setLeftStick(outX, outY)
-                    } else if (axisX === "rx" && axisY === "ry") {
-                        controller.setRightStick(outX, outY)
-                    } else {
-                        if (hasX) controller.setAxis(axisX, outX)
-                        if (hasY) controller.setAxis(axisY, outY)
-                    }
-                }
+                // Normal mode: raw screen-space deflection (right and down
+                // positive). The bridge shapes it, flips Y, applies the
+                // widget's inversion, and routes it to the mapped axes.
+                controller.setStickInput(root.widgetId, nx, ny)
             }
+
+            // Mouse pixels from the press point to full deflection. The thumb
+            // is still drawn at effectiveRadius, so a larger travel means the
+            // thumb moves less than the cursor: more precision per pixel.
+            readonly property real travelRadius: root.travelPx > 0 ? root.travelPx : effectiveRadius
 
             // Base circle
             Rectangle {
@@ -612,8 +567,8 @@ Item {
                     if (!pressed) return
                     var dx = mouse.x - joyRoot._pressX
                     var dy = mouse.y - joyRoot._pressY
-                    var nx = joyRoot._startXValue + (dx / joyRoot.effectiveRadius)
-                    var ny = joyRoot._startYValue + (dy / joyRoot.effectiveRadius)
+                    var nx = joyRoot._startXValue + (dx / joyRoot.travelRadius)
+                    var ny = joyRoot._startYValue + (dy / joyRoot.travelRadius)
                     var mag2 = nx * nx + ny * ny
                     if (mag2 > 1.0) {
                         var mag = Math.sqrt(mag2)
@@ -663,26 +618,48 @@ Item {
                 font.bold: true
             }
 
+            // Modifier badge: this button holds an aim modifier instead of a gamepad button
+            Text {
+                anchors.top: parent.top
+                anchors.topMargin: 3
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: root.modifier === "precision" ? "PRECISION" : ""
+                color: "#ffd166"
+                font.pixelSize: 8
+                font.bold: true
+                visible: root.modifier !== "none"
+            }
+
             MouseArea {
                 id: btnMouseArea
                 anchors.fill: parent
                 hoverEnabled: true
+
+                // A modifier button never touches a gamepad button; it holds
+                // or latches a bridge modifier (momentary or toggle like any
+                // other button).
+                function _send(active) {
+                    if (!controller) return
+                    if (root.modifier !== "none") controller.setModifier(root.modifier, active)
+                    else controller.setButton(root.buttonId, active)
+                }
+
                 onPressed: {
                     // Use per-widget toggleMode first, fall back to global config
-                    var isToggle = root.toggleMode || (controller ? controller.isButtonToggle(root.buttonId) : false)
+                    var isToggle = root.toggleMode || (controller && root.modifier === "none" ? controller.isButtonToggle(root.buttonId) : false)
                     if (isToggle) {
                         btnRect.isToggled = !btnRect.isToggled
-                        if (controller) controller.setButton(root.buttonId, btnRect.isToggled)
+                        _send(btnRect.isToggled)
                     } else {
                         btnRect.isPressed = true
-                        if (controller) controller.setButton(root.buttonId, true)
+                        _send(true)
                     }
                 }
                 onReleased: {
-                    var isToggle = root.toggleMode || (controller ? controller.isButtonToggle(root.buttonId) : false)
+                    var isToggle = root.toggleMode || (controller && root.modifier === "none" ? controller.isButtonToggle(root.buttonId) : false)
                     if (!isToggle) {
                         btnRect.isPressed = false
-                        if (controller) controller.setButton(root.buttonId, false)
+                        _send(false)
                     }
                 }
             }
@@ -826,19 +803,13 @@ Item {
 
                     function _sendSliderValue(v) {
                         if (!controller) return
-                        var axis = root.mapping["axis"] || ""
+                        // Centre-sprung sliders are bipolar (-1..1); hold and
+                        // return-to-zero sliders are unipolar (0..1). The bridge
+                        // shapes each accordingly and routes to the mapped axis.
                         if (root.snapMode === "center") {
-                            var normalized = (v - 0.5) * 2
-                            normalized = root._applyCurve(normalized)
-                            if (axis !== "") controller.setAxis(axis, normalized)
+                            controller.setAxisInput(root.widgetId, (v - 0.5) * 2)
                         } else {
-                            if (axis === "z") {
-                                controller.setThrottle(v)
-                            } else if (axis === "rz") {
-                                controller.setRudder(root._applyCurve(v * 2 - 1))
-                            } else if (axis !== "") {
-                                controller.setAxis(axis, root._applyCurve(v * 2 - 1))
-                            }
+                            controller.setAxisInput(root.widgetId, v)
                         }
                     }
                 }
@@ -1003,18 +974,12 @@ Item {
                     // Map horizontal drag to -1..+1
                     var raw = ((mouse.x / width) * 2 - 1)
                     wheelRoot.angle = Math.max(-1, Math.min(1, raw))
-                    if (controller) {
-                        var axis = root.mapping["axis"] || ""
-                        if (axis !== "") controller.setAxis(axis, root._applyCurve(wheelRoot.angle))
-                    }
+                    if (controller) controller.setAxisInput(root.widgetId, wheelRoot.angle)
                 }
                 onReleased: {
                     // Spring to center
                     wheelRoot.angle = 0
-                    if (controller) {
-                        var axis = root.mapping["axis"] || ""
-                        if (axis !== "") controller.setAxis(axis, 0)
-                    }
+                    if (controller) controller.setAxisInput(root.widgetId, 0)
                 }
             }
         }

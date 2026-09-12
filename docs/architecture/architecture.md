@@ -1,5 +1,14 @@
 # Project Nimbus Architecture
 
+## Current Ownership Boundaries
+
+The application now composes `ApplicationServices`, `ControllerOutput`, and
+`ProfileRepository` behind the existing `ControllerBridge`. See
+[Application Ownership Restructuring](APPLICATION_OWNERSHIP.md) for the current
+responsibilities, compatibility constraints, test commands, and deferred work.
+QML service commands and properties go through `controller`; cloud, telemetry,
+and updater implementations are no longer separate production context objects.
+
 ## High-Level Overview
 
 Project Nimbus is a Python-based modular virtual controller that converts mouse/GUI input into joystick commands via **vJoy** (DirectInput) or **ViGEm** (Xbox 360 XInput emulation). The UI is implemented with **Qt Quick (PySide6 + QML)**, backed by a Python core that manages configuration, sensitivity curves, profiles, and controller I/O.
@@ -113,7 +122,7 @@ The universal wrapper component. It:
    - `dpadContent` — 4-directional button cluster with arrow symbols
    - `wheelContent` — rotational single-axis with spoke indicator
 4. Exposes `joystickLocked`, `updateJoystickPosition()`, `triggerTripleClick()` for the parent overlay
-5. `_applyCurve()` applies sensitivity using the same formula as `config.py:apply_joystick_dialog_curve()`
+5. Sends raw geometry only: `controller.setStickInput(widgetId, nx, ny)` for joysticks and `controller.setAxisInput(widgetId, value)` for sliders and wheels. All shaping happens in the bridge (see Sensitivity Curve below)
 
 ### Widget Palette (Pop-Out Window)
 
@@ -139,11 +148,13 @@ When a joystick is triple-click locked, `CustomLayout.qml` shows a full-canvas `
 Each axis widget stores sensitivity settings as percentages (0–100), matching the Settings menu:
 - `sensitivity` (50% = linear, <50% = exponential, >50% = responsive)
 - `dead_zone` (0–100%, maps to 0–0.25 of axis range internally)
-- `extremity_dead_zone` (0–100%, scales max output)
+- `extremity_dead_zone` (0–100%, scales max output; sticks default to 5, sliders and wheels to 0)
+- `anti_deadzone`, `anti_deadzone_buffer` (fractions): the output floor the smallest movement is lifted to, so a game's own inner deadzone does not swallow it. Defaults to the XInput constants under ViGEm
+- `tremor_filter` (0–10), `precision_gain` (fraction), `travel_px` (pixels)
 
-The `_applyCurve()` function in `DraggableWidget.qml` uses the identical formula as `apply_joystick_dialog_curve()` in `config.py`.
+The single formula lives in `config.py` (`shape_magnitude`, `shape_vector`) and is applied by the bridge in `setStickInput` / `setAxisInput`, in this order: tremor EMA, precision gain, radial inner deadzone, power curve, then a remap of anything non-zero onto `[anti_deadzone + buffer, 1 - extremity]`. It is radial: the vector's magnitude is shaped and its direction kept, so the dead region is a circle, diagonals respond like cardinals, and the magnitude never exceeds 1. The bridge then flips Y (screen-down to controller-up), applies `invert_x` / `invert_y`, and routes to the widget's mapped axes. A release (0, 0) always snaps the output to centre regardless of the filter. The legacy layouts (`adaptive`, `xbox`, `flight_sim`) go through `setLeftStick` / `setRightStick`, which use the same function with the profile's global `joystick_settings`.
 
-The config dialog includes a **Response Curve Preview** canvas that draws the curve in real-time as sliders change.
+The config dialog's **Response Curve Preview** asks the bridge for its points (`shapeCurve`) so the preview and the runtime cannot drift, shows the smallest and largest output, and has a test pad (`previewStick`) that can drive the mapped stick for calibrating the anti-deadzone against a running game.
 
 ### Persistence
 
@@ -179,18 +190,27 @@ Wrapper around the vJoy driver (via `pyvjoy`):
 
 ### `ViGEmInterface` (`src/vigem_interface.py`)
 
-Xbox 360 controller emulation via ViGEm/vgamepad:
+Xbox 360 controller emulation via ViGEmBus, through the pure-Python bus client in `src/padbus_client.py` (no client package or DLL):
 - **2 analog sticks** (left/right), **2 triggers** (LT/RT), **14 buttons**
 - Compatible API with VJoyInterface: `update_axis()`, `set_button()`
 - Auto-selected for `xbox`, `adaptive`, and `custom` layout types when available
 - Provides XInput compatibility for games like No Man's Sky
+
+### `X360Pad` (`src/padbus_client.py`)
+
+The virtual pad itself, a pure-ctypes client for the ViGEmBus protocol (no client package, no DLL):
+- Finds the bus device interface with cfgmgr32, opens it overlapped, and drives it with the bus's buffered IOCTLs (plug, wait ready, submit report, unplug)
+- Keeps vgamepad's method names (`left_joystick_float`, `press_button`, `update`, `reset`) so the swap was mechanical
+- Self-healing: skips serials whose child device is still present, proves a new pad with real reports, and re-plugs a pad whose device object has gone rather than letting it go silently dead (the bus quirk and the numbers are in `docs/vision/PAD_BUS_FORK_PLAN.md`, section 17)
+- `PADBUS_AVAILABLE` is True only when a bus is present; the module imports cleanly anywhere
 
 ### `ControllerBridge` (`src/bridge.py`)
 
 Qt `QObject` exposed to QML as `controller`:
 - Owns `ControllerConfig` + controller interface (VJoy or ViGEm)
 - **Properties**: `scaleFactor`, `debugBorders`, `buttonsVersion`, `noFocusMode`
-- **Axis slots**: `setLeftStick`, `setRightStick`, `setThrottle`, `setRudder`, `setAxis`
+- **Axis slots**: `setStickInput(widgetId, nx, ny)` and `setAxisInput(widgetId, value)` for custom-layout widgets (shaped from the widget's profile settings); `setLeftStick`, `setRightStick`, `setThrottle`, `setRudder`, `setAxis` for the legacy layouts and macro actions
+- **Shaping helpers**: `setModifier(name, active)` / `isModifierActive` (the precision modifier), `shapeCurve(paramsJson)` and `previewStick(...)` for the config dialog, `defaultAntiDeadzone(axis)`
 - **Button slot**: `setButton(id, pressed)`
 - **Profile slots**: `switchProfile`, `saveCurrentProfile`, `createProfileAs`, `deleteProfile`
 - **Custom layout slots**: `getCustomLayout`, `saveCustomLayout`, `getCustomLayoutGridSnap`, `getCustomLayoutShowGrid`
@@ -201,8 +221,8 @@ Qt `QObject` exposed to QML as `controller`:
 ### `WindowUtils` (`src/window_utils.py`)
 
 Windows-specific utilities for Game Focus Mode:
-- Saves foreground window on mouse press, restores on release
-- Uses Windows API: `GetForegroundWindow`, `SetForegroundWindow`, `AttachThreadInput`
+- Adds `WS_EX_NOACTIVATE` to the Nimbus window and answers `WM_MOUSEACTIVATE` with `MA_NOACTIVATE`, so clicks never move the foreground away from the game
+- Keeps `GetForegroundWindow` / `SetForegroundWindow` / `AttachThreadInput` helpers as a fallback for the rare activation that still happens (Alt+Tab)
 - Only available on Windows; gracefully disabled on other platforms
 
 ### `Borderless` (`src/borderless.py`)
@@ -217,6 +237,16 @@ Borderless gaming and mouse capture (Windows only, pure ctypes):
 - **`GAME_COMPATIBILITY`** — built-in database of verified/likely/partial/incompatible games
 - Exposed via 12 `ControllerBridge` slots (see bridge section above)
 - UI: `qml/components/BorderlessGamingDialog.qml` — game picker, auto-detect, one-click apply, compatibility browser
+
+### `MouseIsolation` (`src/mouse_isolation_win.py`) and the `driver/` filter
+
+Mouse isolation is the answer to games that read the mouse through Raw Input, which neither cursor release nor the `WH_MOUSE_LL` hook can stop (measured in `docs/vision/HOST_MODE_ISOLATION.md`, section 8). It has two halves:
+
+- **Kernel:** `driver/nimbus_moufilter`, a KMDF upper filter on the mouse class. Pass-through by default. While a client holds `\\.\NimbusMouseFilter` open with isolation on, physical mouse packets are withheld from `mouclass` and delivered to the client through `ReadFile`. Isolation is cleared when the client's handle closes and by a 2 s read watchdog; the keyboard is never filtered. Built with `driver\build.ps1` (needs the WDK); not part of `run.py`.
+- **User mode:** `MouseIsolation(on_motion, on_button, on_wheel, on_stopped, hotkey, cursor_relay)`, the same class API as the Linux `src/mouse_isolation.py` on the `linux-uinput-support` branch (evdev button codes included) plus the Windows-only `cursor_relay`: the reader thread applies captured motion to the real cursor with `SetCursorPos`, which creates no input event, so the cursor keeps working everywhere while the game's Raw Input sees nothing and the game keeps the foreground. The bridge imports it under `MOUSE_ISOLATION_AVAILABLE` (True only when the driver's device exists) and starts it from Full Game Mode with a per-point policy (never over the game window unless that spot is Nimbus) and a per-window click policy (synthesised Qt events over Nimbus, `SendInput` elsewhere). `Ctrl+Alt+F12` is polled on the reader thread. `start()` raises `RuntimeError` with an install hint when the driver is absent and refuses to succeed when the driver is attached to no mouse.
+- **Contract:** `driver/nimbus_moufilter/nimbus_moufilter_ioctl.h` and the constants at the top of `mouse_isolation_win.py` must change together.
+
+Status: dev build validated on hardware on 2026-09-05 (a Raw Input window received nothing while the driver captured every packet), then interface v3 (a heartbeat so a frozen Nimbus loses the mouse within 2 s) under Driver Verifier, the cursor relay against Left 4 Dead 2, and the real app in Full Game Mode against a fake Raw Input game (`tests/probe_nimbus_relay_windows.py`, 8/8). Full Game Mode brings the game to the foreground itself and parks a cursor found over the game onto Nimbus, so the relay policy never leaves a physical mouse stuck. On 2026-09-06 the filter passed an unattended battle test (`tests/probe_mouse_filter_stress_windows.py`: storms, floods, process chaos, CPU starvation, an API fuzz, a soak; 15/15, also under Driver Verifier) and the static checks (WDK Code Analysis, CodeQL), which produced three fixes: the reader thread runs at time-critical priority so a busy game cannot starve it past the watchdog, two driver functions that take a spin lock left the pageable section, and interface v4 shortened the heartbeat tick to 250 ms so a live client survives a stall of at least 1.5 s. The client also pauses isolation while the lock screen or a UAC prompt has the input, since the relay cannot reach the secure desktop. Not attestation-signed, not in any release, not in the installer. See `docs/vision/WINDOWS_MOUSE_FILTER_PLAN.md`.
 
 ---
 

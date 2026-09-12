@@ -48,13 +48,15 @@ Usage::
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import webbrowser
 from typing import Any, Dict, Optional, Tuple
 
-from PySide6.QtCore import QObject, Signal, Slot, QTimer, QThread
+from PySide6.QtCore import QObject, Signal, Slot, QTimer, QUrl
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +77,8 @@ STARTUP_CHECK_DELAY_MS = 10_000  # 10 seconds
 
 # How often to re-check (ms) while the app is running.  Default: every 6 hours.
 RECHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
+REQUEST_DEADLINE_MS = 10_000
+MAX_MANIFEST_BYTES = 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -138,38 +142,6 @@ def is_below_minimum(current: str, minimum: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Background fetch worker
-# ---------------------------------------------------------------------------
-
-class _FetchWorker(QThread):
-    """Fetch the version manifest in a background thread."""
-
-    finished = Signal(dict)  # emits the parsed JSON manifest (or empty dict)
-    error = Signal(str)      # emits error message
-
-    def __init__(self, url: str, parent: Optional[QObject] = None) -> None:
-        super().__init__(parent)
-        self._url = url
-
-    def run(self) -> None:
-        try:
-            import httpx
-
-            response = httpx.get(self._url, timeout=10.0, follow_redirects=True)
-            if response.status_code == 200:
-                self.finished.emit(response.json())
-            else:
-                self.error.emit(f"Version check HTTP {response.status_code}")
-                self.finished.emit({})
-        except ImportError:
-            self.error.emit("httpx not installed — update check skipped.")
-            self.finished.emit({})
-        except Exception as e:
-            self.error.emit(str(e))
-            self.finished.emit({})
-
-
-# ---------------------------------------------------------------------------
 # UpdateChecker
 # ---------------------------------------------------------------------------
 
@@ -205,7 +177,8 @@ class UpdateChecker(QObject):
     noUpdateAvailable = Signal()
     checkFailed = Signal(str)
 
-    def __init__(self, config: Any, parent: Optional[QObject] = None) -> None:
+    def __init__(self, config: Any, parent: Optional[QObject] = None, *,
+                 network_manager: Optional[QNetworkAccessManager] = None) -> None:
         super().__init__(parent)
         self._config = config
 
@@ -221,8 +194,14 @@ class UpdateChecker(QObject):
         self._download_url: str = DEFAULT_DOWNLOAD_URL
         self._release_notes: str = ""
 
-        # Background worker
-        self._worker: Optional[_FetchWorker] = None
+        self._network = network_manager if network_manager is not None else QNetworkAccessManager(self)
+        self._reply: Optional[QNetworkReply] = None
+        self._response = bytearray()
+        self._closed = False
+        self._deadline = QTimer(self)
+        self._deadline.setSingleShot(True)
+        self._deadline.setInterval(REQUEST_DEADLINE_MS)
+        self._deadline.timeout.connect(lambda: self._fail_request("Update request exceeded its deadline"))
 
         # Periodic re-check timer
         self._recheck_timer = QTimer(self)
@@ -278,21 +257,79 @@ class UpdateChecker(QObject):
         """
         Start a non-blocking version check.
 
-        Fetches the version manifest in a background thread. When complete,
+        Fetches the version manifest asynchronously. When complete,
         one of the signals is emitted: ``updateAvailable``,
         ``forceUpdateRequired``, ``noUpdateAvailable``, or ``checkFailed``.
         """
-        if self._worker and self._worker.isRunning():
+        if self._closed:
+            return
+        if self._reply is not None:
             logger.debug("Update check already in progress — skipping.")
             return
 
         logger.debug("Starting update check against %s (channel=%s).",
                       VERSION_URL, self._channel)
 
-        self._worker = _FetchWorker(VERSION_URL, self)
-        self._worker.finished.connect(self._on_manifest_received)
-        self._worker.error.connect(self._on_check_error)
-        self._worker.start()
+        request = QNetworkRequest(QUrl(VERSION_URL))
+        request.setAttribute(QNetworkRequest.Attribute.RedirectPolicyAttribute,
+                             QNetworkRequest.RedirectPolicy.NoLessSafeRedirectPolicy)
+        self._response.clear()
+        self._reply = self._network.get(request)
+        self._reply.setReadBufferSize(MAX_MANIFEST_BYTES + 1)
+        reply = self._reply
+        reply.readyRead.connect(lambda: self._read_response(reply))
+        reply.finished.connect(lambda: self._finish_response(reply))
+        self._deadline.start()
+
+    def shutdown(self) -> None:
+        """Cancel requests without waiting on network progress or a worker."""
+        self._closed = True
+        self._recheck_timer.stop()
+        self._cancel_request()
+
+    def _cancel_request(self) -> None:
+        self._deadline.stop()
+        reply, self._reply = self._reply, None
+        self._response.clear()
+        if reply is not None:
+            reply.abort()
+            reply.deleteLater()
+
+    def _fail_request(self, message: str) -> None:
+        if self._reply is None:
+            return
+        self._cancel_request()
+        self._on_check_error(message)
+
+    def _read_response(self, reply: QNetworkReply) -> None:
+        if self._closed or reply is not self._reply:
+            return
+        self._response.extend(bytes(reply.readAll()))
+        if len(self._response) > MAX_MANIFEST_BYTES:
+            self._fail_request("Update manifest is too large")
+
+    def _finish_response(self, reply: QNetworkReply) -> None:
+        if self._closed or reply is not self._reply:
+            return
+        self._read_response(reply)
+        if reply is not self._reply:
+            return
+        self._deadline.stop()
+        self._reply = None
+        try:
+            status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+            if reply.error() != QNetworkReply.NetworkError.NoError or status != 200:
+                self._on_check_error("Version check failed: HTTP " + str(status))
+                return
+            manifest = json.loads(bytes(self._response))
+            if not isinstance(manifest, dict):
+                raise ValueError("Update manifest must be an object")
+            self._on_manifest_received(manifest)
+        except (ValueError, TypeError, AttributeError) as exc:
+            self._on_check_error("Invalid update manifest: " + str(exc))
+        finally:
+            self._response.clear()
+            reply.deleteLater()
 
     @Slot()
     def open_download_page(self) -> None:
@@ -324,7 +361,7 @@ class UpdateChecker(QObject):
 
     def _on_manifest_received(self, manifest: Dict[str, Any]) -> None:
         """Process the downloaded version manifest."""
-        if not manifest:
+        if self._closed or not manifest:
             return
 
         # Determine the target version for the active channel
@@ -371,5 +408,7 @@ class UpdateChecker(QObject):
 
     def _on_check_error(self, message: str) -> None:
         """Handle version check failure (non-critical)."""
+        if self._closed:
+            return
         logger.debug("Update check failed: %s", message)
         self.checkFailed.emit(message)

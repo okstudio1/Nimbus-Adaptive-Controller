@@ -3,8 +3,10 @@
 ## Prerequisites
 
 - **Windows 10/11** (64-bit)
-- **vJoy driver** — must be installed separately from [vJoy on GitHub](https://github.com/njz3/vJoy) or [SourceForge](https://sourceforge.net/projects/vjoystick/)
-- Optional: **ViGEmBus driver** for Xbox 360 controller emulation (`pip install vgamepad` installs it)
+- Nothing else. The installer includes both controller drivers and installs whichever one is missing:
+  - **vJoy 2.1.9.1** for DirectInput profiles ([source](https://github.com/jshafer817/vJoy); newer 2.2.x builds do not load on Windows 11)
+  - **ViGEmBus 1.22.0** for Xbox 360 profiles and Game Mode ([source](https://github.com/nefarius/ViGEmBus))
+- Running from source instead? Install both drivers by hand from the links above, or run the installer once (it leaves the drivers in place if Nimbus is uninstalled). The app talks to ViGEmBus directly through `src/padbus_client.py` and needs no client package.
 
 ## Installing Nimbus Adaptive Controller
 
@@ -17,8 +19,10 @@
    - Check if Nimbus Adaptive Controller is already running and offer to close it
    - Detect any previous installation (per-user or system-wide) and offer to remove it
    - Let you choose the installation directory (default: `%LOCALAPPDATA%\Programs\Project Nimbus\`)
+   - **Drivers page**: shows whether vJoy and ViGEmBus are already present, and offers to install whichever is missing. Both are included in the installer, so no internet connection is needed. Untick either one to skip it; Nimbus still starts without them, with the matching profile types unavailable
    - **Shortcut options page** — Choose whether to create Desktop and/or Start Menu shortcuts
    - Install the executable and create uninstaller
+   - Install the drivers you ticked, then check they really are present and say so if one is not
    - Register in Windows Add/Remove Programs
 5. Click "Launch Nimbus Adaptive Controller" on the final page to start
 
@@ -103,7 +107,11 @@ build_tools\sign_exe.bat dist\Nimbus-Adaptive-Controller-Setup-X.Y.Z.exe
 
 ## vJoy Setup
 
-1. Download vJoy from [GitHub releases](https://github.com/njz3/vJoy/releases)
+The Nimbus installer does all of this for you: it installs vJoy 2.1.9.1 and
+configures device 1 with 8 axes and 128 buttons. Follow the steps below only if
+you are running from source, or if you unticked vJoy during installation.
+
+1. Download vJoy 2.1.9.1 from [jshafer817's releases](https://github.com/jshafer817/vJoy/releases/tag/v2.1.9.1). Its driver is Microsoft-signed. Avoid the newer 2.2.x builds: their driver fails to load on Windows 11 (njz3/vJoy issue 17), leaving a device with 0 buttons.
 2. Run the installer (requires admin rights)
 3. Open **vJoyConf** (vJoy Configuration) and ensure:
    - Device 1 is enabled

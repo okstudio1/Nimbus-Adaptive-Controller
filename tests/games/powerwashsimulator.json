@@ -1,0 +1,104 @@
+{
+    "name": "powerwashsimulator",
+    "title": "PowerWash Simulator",
+    "process": "PowerWashSimulator.exe",
+    "steam_exe": "C:\\Program Files (x86)\\Steam\\steam.exe",
+    "steam_app_id": 1290000,
+    "game_dir": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\PowerWash Simulator",
+    "launch_args": [],
+    "window_timeout_s": 300,
+    "ready_timeout_s": 300,
+    "warmup_s": 15,
+    "turn_right_sign": -1,
+    "oracle": {
+        "type": "frame_diff"
+    },
+    "window": {
+        "w": 1280,
+        "h": 720,
+        "x": 0,
+        "y": 0,
+        "borderless": true
+    },
+    "pointer_ref_w": 2560,
+    "pointer_px_per_s": 1570,
+    "pointer_park_s": 2.5,
+    "ready_sequence": [
+        {
+            "wait": 25,
+            "note": "FuturLab and Unity splash, which ends on the main menu with no title screen to clear"
+        },
+        {
+            "pointer": [
+                0.568,
+                0.545
+            ],
+            "press": [
+                1
+            ],
+            "note": "the Career card on the main menu"
+        },
+        {
+            "wait": 3
+        },
+        {
+            "pointer": [
+                0.238,
+                0.545
+            ],
+            "press": [
+                1
+            ],
+            "note": "the Continue card on the career screen"
+        },
+        {
+            "wait": 4
+        },
+        {
+            "pointer": [
+                0.318,
+                0.4
+            ],
+            "press": [
+                1
+            ],
+            "note": "the one in-progress job card, top left of the IN PROGRESS tab"
+        },
+        {
+            "wait": 4
+        },
+        {
+            "press_until_control": [
+                1
+            ],
+            "action": {
+                "rx": 1.0
+            },
+            "hold": 0.6,
+            "interval": 3,
+            "timeout": 150,
+            "note": "RESUME JOB and then CONTINUE on the controls screen: on both the pointer snaps to the button itself, so a plain A is enough, and the loop stops as soon as the right stick turns the camera"
+        }
+    ],
+    "reset_pose": null,
+    "notes": "Unity (FuturLab), no anti-cheat and no console, so it starts whatever test signing is doing and the oracle is frame differencing: every verdict is MOVED or STILL against a one-second noise floor, there is no reset, no pose, and no calibration table, exactly as for Elden Ring. Unlike the Source games there is no ground truth in degrees here, only whether the picture changed. In the world the left stick walks, the right stick aims, A jumps and the right trigger washes (the game's own DEFAULT CONTROLS screen says so on the way in).\n\nThe menus are the thing this recipe is really about, and they cost a run to learn (2026-09-08). They are driven by a virtual pointer, not by a highlight: A clicks whatever the pointer is over, and with the pointer over nothing A does nothing at all. The pointer is moved by the LEFT stick at about 1570 px/s at full deflection, measured at 2560x1440, and it clamps at the screen edges, which is the only fixed reference there is; the right stick does not move it, so the readiness stick test is safe to run in a menu. It ignores SetCursorPos and a synthesized click entirely, so the mouse is not a way in. Hence the `pointer` steps: park in the top left corner and move by time, which lands within about 50 px of the target over a half-second move. The fractions are of the client rect, so they survive a resolution change as long as the pointer speed is in screen pixels.\n\nThe launch args are gone because they do not work: `-screen-fullscreen 0 -screen-width 1280 -screen-height 720` gives a 1280x720 window for the first few seconds and then the game applies its own saved preference (SaveData\\Preferences\\FuturPlayerPrefs.sav) and goes borderless fullscreen at the desktop resolution. Captures follow it, because `grab()` re-reads the client rect every time, but nothing here can assume a window size. The recipe's window key asks for 1280x720 borderless anyway and the game refuses it at every stage (launch, before the sequence, at readiness; measured 2026-09-09: SetWindowPos lands and the client rect reads 2560x1440 again), which is recorded in the results JSON as a property of the game. So this recipe runs full screen, the Nimbus window sits off screen (harmless: the actuator posts events to the QML window rather than clicking the screen), and pointer_ref_w only matters if the game ever accepts a smaller window.\n\nWhy pressing A blindly is safe here, where it is not in Elden Ring: this is a non-destructive sandbox. In-world A is Jump, the worst outcome of a stray press is a hop, and there is no confirm dialog that discards progress. The career save is slot 0, mid-job in the back garden job (`Clean the Back Garden`, 61 percent when this recipe was written); the game autosaves, so a run picks up wherever the last one left off and the harness killing the process at the end loses at most the last few seconds of washing.\n\nThe menu path itself: splash to main menu, Career card, Continue card, the single job card in the IN PROGRESS tab, RESUME JOB, then CONTINUE on the controls screen. On the last two the game snaps the pointer onto the button by itself, which is why they are left to `press_until_control` rather than aimed.",
+    "expect": {
+        "G5": {
+            "0.26": {
+                "px_per_s": -16.0,
+                "tol_pct": 25.0,
+                "tol_abs": 10.0
+            },
+            "0.28": {
+                "px_per_s": -48.4,
+                "tol_pct": 25.0,
+                "tol_abs": 10.0
+            }
+        },
+        "N2": {
+            "px_per_s": -58.4,
+            "tol_pct": 25.0,
+            "tol_abs": 10.0
+        }
+    }
+}

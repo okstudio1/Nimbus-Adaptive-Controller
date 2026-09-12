@@ -7,6 +7,7 @@ import "../components" as Comp
 
 Item {
     id: root
+    objectName: "customLayout"   // lets tests find the layout
     property real scaleFactor: 1.0
     property string outputMode: "vjoy"
     property var mainWindow: null
@@ -113,6 +114,33 @@ Item {
             }
         }
 
+        // Overlap warning: a widget whose centre a later widget covers cannot
+        // be pressed there, because the later one is on top and takes the press.
+        Rectangle {
+            id: overlapBanner
+            readonly property var pairs: root._overlappingWidgets(root.widgetModel)
+            anchors.top: parent.top
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.topMargin: 42
+            width: overlapBannerText.width + 30
+            height: 28
+            radius: 14
+            color: "#3a2a1a"
+            border.color: "#ffb74d"
+            border.width: 1
+            visible: editMode && pairs.length > 0
+            z: 200
+
+            Text {
+                id: overlapBannerText
+                anchors.centerIn: parent
+                text: "Overlapping widgets: " + overlapBanner.pairs.join(", ") + ". The one on top takes the press."
+                color: "#ffb74d"
+                font.pixelSize: 11
+                font.bold: true
+            }
+        }
+
         // ==================== WIDGET REPEATER ====================
         Repeater {
             id: widgetRepeater
@@ -123,6 +151,8 @@ Item {
 
                 // Pull data from model
                 property var wData: modelData || {}
+                // Lets tests and tooling find a widget by its profile id
+                objectName: "widget_" + (wData.id || "")
 
                 x: wData.x || 0
                 y: wData.y || 0
@@ -144,12 +174,8 @@ Item {
                 autoCenter: wData.auto_center || false
                 autoCenterDelay: wData.auto_center_delay !== undefined ? Math.max(1, Math.min(10, wData.auto_center_delay)) : 5
                 lockSensitivity: wData.lock_sensitivity !== undefined ? wData.lock_sensitivity : 4.0
-                tremorFilter: wData.tremor_filter !== undefined ? wData.tremor_filter : 0.0
-                sensitivity: wData.sensitivity !== undefined ? wData.sensitivity : 50.0
-                deadZone: wData.dead_zone !== undefined ? wData.dead_zone : 0.0
-                extremityDeadZone: wData.extremity_dead_zone !== undefined ? wData.extremity_dead_zone : 5.0
-                invert_x: wData.invert_x || false
-                invert_y: wData.invert_y || false
+                travelPx: wData.travel_px !== undefined ? wData.travel_px : 0
+                modifier: wData.modifier || "none"
                 macroMode: wData.macro_mode || false
                 macroConfig: wData.macro_config || { "zones": {}, "deadzone_percent": 30, "diagonal_mode": "8-way" }
 
@@ -213,10 +239,6 @@ Item {
         property real lockNy: 0
         property bool _animating: false
         property bool _warping: false   // true while SetCursorPos is in flight; skip stale events
-
-        // EMA tremor filter state
-        property real _smoothNx: 0
-        property real _smoothNy: 0
 
         // Safety: clear _warping after a short delay in case SetCursorPos
         // doesn't generate a QML positionChanged event
@@ -304,24 +326,10 @@ Item {
             var scale = root.lockedWidget.lockSensitivity * 2
             var half_w = root.lockedWidget.width / 2
             var half_h = root.lockedWidget.height / 2
-            var rawNx = Math.max(-1, Math.min(1, (dx / half_w) * scale))
-            var rawNy = Math.max(-1, Math.min(1, (dy / half_h) * scale))
-
-            // Apply EMA tremor filter: higher tremorFilter value = more smoothing
-            var tf = root.lockedWidget.tremorFilter
-            if (tf > 0) {
-                // alpha: 1.0 (no smooth) to 0.1 (heavy smooth)
-                var alpha = 1.0 - (tf / 10.0) * 0.9
-                _smoothNx = _smoothNx * (1.0 - alpha) + rawNx * alpha
-                _smoothNy = _smoothNy * (1.0 - alpha) + rawNy * alpha
-                lockNx = _smoothNx
-                lockNy = _smoothNy
-            } else {
-                lockNx = rawNx
-                lockNy = rawNy
-                _smoothNx = rawNx
-                _smoothNy = rawNy
-            }
+            // Raw deflection; the tremor filter and all other shaping run in
+            // the bridge, on this path and on the drag path alike.
+            lockNx = Math.max(-1, Math.min(1, (dx / half_w) * scale))
+            lockNy = Math.max(-1, Math.min(1, (dy / half_h) * scale))
             root.lockedWidget.updateJoystickPosition(lockNx, lockNy)
 
             // Warp cursor back to joystick center (FPS-style)
@@ -429,6 +437,7 @@ Item {
     // ==================== WIDGET CONFIG DIALOG ====================
     Rectangle {
         id: configDialog
+        objectName: "widgetConfigDialog"   // lets tests find the dialog
         anchors.centerIn: parent
         width: 360
         height: Math.min(configContent.height + 60, root.height - 40)
@@ -444,6 +453,28 @@ Item {
         property var targetWidget: null
         property var _currentMacroConfig: ({ "zones": {}, "deadzone_percent": 30, "diagonal_mode": "8-way" })
 
+        // The shaping parameters the sliders currently show, as the JSON the
+        // bridge's shapeCurve / previewStick slots take. Percent sliders for
+        // the anti-deadzone become fractions here, as stored in the profile.
+        function _shapeParamsJson() {
+            return JSON.stringify({
+                "sensitivity": sensitivitySlider.value,
+                "dead_zone": deadZoneSlider.value,
+                "extremity_dead_zone": extremityDzSlider.value,
+                "anti_deadzone": antiDzSlider.value / 100.0,
+                "anti_deadzone_buffer": antiDzBufferSlider.value / 100.0
+            })
+        }
+
+        // Closing the dialog mid-drag on the test pad must not leave the
+        // controller deflected.
+        onVisibleChanged: {
+            if (!visible && controller && targetWidgetId !== "") {
+                testPad.nx = 0; testPad.ny = 0; testPad.outX = 0; testPad.outY = 0; testPad.outMag = 0
+                controller.previewStick(targetWidgetId, 0, 0, "{}", true)
+            }
+        }
+
         function openForWidget(wid) {
             for (var i = 0; i < root.widgetModel.length; i++) {
                 if (root.widgetModel[i].id === wid) {
@@ -451,16 +482,29 @@ Item {
                     targetWidget = root.widgetModel[i]
                     labelField.text = targetWidget.label || ""
 
-                    // Sensitivity & deadzone (all axis types, percentage-based)
+                    // Sensitivity & deadzone (all axis types, percentage-based).
+                    // A stick keeps a 5% extremity cap by default; a slider or
+                    // wheel reaches its full range.
+                    var isStick = targetWidget.type === "joystick"
                     sensitivitySlider.value = targetWidget.sensitivity !== undefined ? targetWidget.sensitivity : 50.0
                     deadZoneSlider.value = targetWidget.dead_zone !== undefined ? targetWidget.dead_zone : 0.0
-                    extremityDzSlider.value = targetWidget.extremity_dead_zone !== undefined ? targetWidget.extremity_dead_zone : 5.0
+                    extremityDzSlider.value = targetWidget.extremity_dead_zone !== undefined ? targetWidget.extremity_dead_zone : (isStick ? 5.0 : 0.0)
+                    // Anti-deadzone: the widget's own value, else the backend
+                    // default for the axis it drives (XInput constants under ViGEm)
+                    var adzAxis = isStick ? (targetWidget.mapping ? targetWidget.mapping.axis_x : "") : (targetWidget.mapping ? targetWidget.mapping.axis : "")
+                    var adzDefault = controller ? controller.defaultAntiDeadzone(adzAxis || "") : 0
+                    antiDzSlider.value = (targetWidget.anti_deadzone !== undefined ? targetWidget.anti_deadzone : adzDefault) * 100.0
+                    antiDzBufferSlider.value = (targetWidget.anti_deadzone_buffer !== undefined ? targetWidget.anti_deadzone_buffer : 0.02) * 100.0
+                    testDriveSwitch.checked = false
+                    testPad.nx = 0; testPad.ny = 0; testPad.outX = 0; testPad.outY = 0; testPad.outMag = 0
 
                     if (targetWidget.type === "button") {
                         buttonIdField.text = String(targetWidget.button_id || 1)
                         colorField.text = targetWidget.color || "#333"
                         shapeCombo.currentIndex = ["circle", "rounded", "square"].indexOf(targetWidget.shape || "rounded")
                         toggleModeSwitch.checked = targetWidget.toggle_mode || false
+                        var _modIdx = ["none", "precision"].indexOf(targetWidget.modifier || "none")
+                        modifierCombo.currentIndex = _modIdx >= 0 ? _modIdx : 0
                     }
                     if (targetWidget.type === "joystick") {
                         var _axVals = root.outputMode === "vigem"
@@ -477,6 +521,8 @@ Item {
                         autoCenterDelaySlider.value = targetWidget.auto_center_delay !== undefined ? Math.max(1, Math.min(10, targetWidget.auto_center_delay)) : 5
                         lockSensSlider.value = targetWidget.lock_sensitivity !== undefined ? targetWidget.lock_sensitivity : 4
                         tremorFilterSlider.value = targetWidget.tremor_filter !== undefined ? targetWidget.tremor_filter : 0
+                        travelSlider.value = targetWidget.travel_px !== undefined ? targetWidget.travel_px : 0
+                        precisionSlider.value = (targetWidget.precision_gain !== undefined ? targetWidget.precision_gain : 0.25) * 100.0
                         macroModeSwitch.checked = targetWidget.macro_mode || false
                         configDialog._currentMacroConfig = targetWidget.macro_config || { "zones": {}, "deadzone_percent": 30, "diagonal_mode": "8-way" }
                     }
@@ -519,6 +565,7 @@ Item {
 
         Flickable {
             id: configFlickable
+            objectName: "configFlickable"
             anchors.top: parent.top
             anchors.left: parent.left
             anchors.right: parent.right
@@ -699,6 +746,38 @@ Item {
                         }
                     }
                 }
+
+                // Action: a gamepad button, or a modifier the sticks read.
+                // "Precision aim" scales every joystick by its precision gain
+                // while this button is held (or latched, in Toggle mode).
+                Row {
+                    spacing: 8
+                    Text { text: "Action:"; color: "#ccc"; font.pixelSize: 12; width: 70; verticalAlignment: Text.AlignVCenter; height: 30 }
+                    Basic.ComboBox {
+                        id: modifierCombo
+                        objectName: "modifierCombo"
+                        width: 160
+                        model: ["Gamepad button", "Precision aim"]
+                        background: Rectangle { color: "#1a1a1a"; border.color: "#444"; radius: 4 }
+                        contentItem: Text { text: modifierCombo.displayText; color: "white"; font.pixelSize: 12; leftPadding: 8; verticalAlignment: Text.AlignVCenter }
+                        delegate: ItemDelegate {
+                            width: modifierCombo.width
+                            highlighted: modifierCombo.highlightedIndex === index
+                            contentItem: Text { text: modelData; color: parent.highlighted ? "white" : "#ccc"; font.pixelSize: 12; leftPadding: 8; verticalAlignment: Text.AlignVCenter }
+                            background: Rectangle { color: parent.highlighted ? "#4a9eff" : "#333" }
+                        }
+                        popup: Popup {
+                            y: modifierCombo.height; width: modifierCombo.width; padding: 1
+                            background: Rectangle { color: "#333"; border.color: "#555"; radius: 4 }
+                            contentItem: ListView { clip: true; implicitHeight: contentHeight; model: modifierCombo.delegateModel; currentIndex: modifierCombo.highlightedIndex }
+                        }
+                    }
+                }
+                Text {
+                    visible: modifierCombo.currentIndex === 1
+                    text: "Holding this slows every stick to its Precision gain. No gamepad button is sent."
+                    color: "#ffd166"; font.pixelSize: 10; wrapMode: Text.WordWrap; width: parent.width
+                }
             }
 
             // Joystick-specific fields
@@ -859,10 +938,60 @@ Item {
                     Text { text: lockSensSlider.value.toFixed(0); color: "#ff8833"; font.pixelSize: 11; width: 30; verticalAlignment: Text.AlignVCenter; height: 30 }
                 }
 
-                // Tremor filter slider (smooths jittery wheelchair joystick input)
+                // Travel: mouse pixels from the press point to full deflection.
+                // 0 follows the drawn radius (the old behaviour); more travel is
+                // more precision per pixel, at the cost of desk space.
                 Row {
                     spacing: 8
-                    visible: tripleClickSwitch.checked
+                    Text { text: "Travel:"; color: "#ccc"; font.pixelSize: 12; width: 70; verticalAlignment: Text.AlignVCenter; height: 30 }
+                    Basic.Slider {
+                        id: travelSlider
+                        objectName: "travelSlider"
+                        width: 140
+                        from: 0; to: 600; stepSize: 10
+                        value: 0
+                        background: Rectangle {
+                            x: travelSlider.leftPadding; y: travelSlider.topPadding + travelSlider.availableHeight / 2 - height / 2
+                            width: travelSlider.availableWidth; height: 4; radius: 2; color: "#444"
+                            Rectangle { width: travelSlider.visualPosition * parent.width; height: parent.height; radius: 2; color: "#4a9eff" }
+                        }
+                        handle: Rectangle { x: travelSlider.leftPadding + travelSlider.visualPosition * (travelSlider.availableWidth - width); y: travelSlider.topPadding + travelSlider.availableHeight / 2 - height / 2; width: 16; height: 16; radius: 8; color: "#fff" }
+                    }
+                    Text {
+                        // The auto value is the drawn radius less the thumb, as DraggableWidget computes it
+                        text: {
+                            if (travelSlider.value > 0) return travelSlider.value.toFixed(0) + "px"
+                            var tw = configDialog.targetWidget ? Math.min(configDialog.targetWidget.width || 100, configDialog.targetWidget.height || 100) : 100
+                            return "Auto (" + Math.round(Math.max(1, tw / 2 - 1 - tw * 0.09)) + "px)"
+                        }
+                        color: "#4a9eff"; font.pixelSize: 11; width: 70; verticalAlignment: Text.AlignVCenter; height: 30
+                    }
+                }
+
+                // Precision gain: how much of this stick's range is left while a
+                // "Precision aim" button is held
+                Row {
+                    spacing: 8
+                    Text { text: "Precision:"; color: "#ccc"; font.pixelSize: 12; width: 70; verticalAlignment: Text.AlignVCenter; height: 30 }
+                    Basic.Slider {
+                        id: precisionSlider
+                        objectName: "precisionSlider"
+                        width: 140
+                        from: 5; to: 100; stepSize: 5
+                        value: 25
+                        background: Rectangle {
+                            x: precisionSlider.leftPadding; y: precisionSlider.topPadding + precisionSlider.availableHeight / 2 - height / 2
+                            width: precisionSlider.availableWidth; height: 4; radius: 2; color: "#444"
+                            Rectangle { width: precisionSlider.visualPosition * parent.width; height: parent.height; radius: 2; color: "#ffd166" }
+                        }
+                        handle: Rectangle { x: precisionSlider.leftPadding + precisionSlider.visualPosition * (precisionSlider.availableWidth - width); y: precisionSlider.topPadding + precisionSlider.availableHeight / 2 - height / 2; width: 16; height: 16; radius: 8; color: "#fff" }
+                    }
+                    Text { text: precisionSlider.value.toFixed(0) + "%"; color: "#ffd166"; font.pixelSize: 11; width: 35; verticalAlignment: Text.AlignVCenter; height: 30 }
+                }
+
+                // Tremor filter slider (EMA on every stick input path, drag and lock alike)
+                Row {
+                    spacing: 8
                     Text { text: "Tremor:"; color: "#ccc"; font.pixelSize: 12; width: 70; verticalAlignment: Text.AlignVCenter; height: 30 }
                     Basic.Slider {
                         id: tremorFilterSlider
@@ -1230,7 +1359,54 @@ Item {
                     Text { text: extremityDzSlider.value.toFixed(0) + "%"; color: "#aa44ff"; font.pixelSize: 11; width: 35; verticalAlignment: Text.AlignVCenter; height: 30 }
                 }
 
-                // Response Curve Preview (matches Settings menu graph exactly)
+                // Output anti-deadzone: the smallest movement is lifted to this
+                // fraction of the range so the game's own inner deadzone does
+                // not swallow it. Defaults to the XInput constants under ViGEm.
+                Row {
+                    spacing: 8
+                    Text { text: "Anti-DZ:"; color: "#ccc"; font.pixelSize: 12; width: 70; verticalAlignment: Text.AlignVCenter; height: 30 }
+                    Basic.Slider {
+                        id: antiDzSlider
+                        objectName: "antiDzSlider"
+                        width: 140
+                        from: 0; to: 50; stepSize: 0.5
+                        value: 0
+                        onValueChanged: responseCurve.requestPaint()
+                        background: Rectangle {
+                            x: antiDzSlider.leftPadding; y: antiDzSlider.topPadding + antiDzSlider.availableHeight / 2 - height / 2
+                            width: antiDzSlider.availableWidth; height: 4; radius: 2; color: "#444"
+                            Rectangle { width: antiDzSlider.visualPosition * parent.width; height: parent.height; radius: 2; color: "#22c55e" }
+                        }
+                        handle: Rectangle { x: antiDzSlider.leftPadding + antiDzSlider.visualPosition * (antiDzSlider.availableWidth - width); y: antiDzSlider.topPadding + antiDzSlider.availableHeight / 2 - height / 2; width: 16; height: 16; radius: 8; color: "#fff" }
+                    }
+                    Text { text: antiDzSlider.value.toFixed(1) + "%"; color: "#22c55e"; font.pixelSize: 11; width: 40; verticalAlignment: Text.AlignVCenter; height: 30 }
+                }
+
+                // Anti-deadzone buffer: a margin the user adds above the game's
+                // threshold once the anti-deadzone is calibrated
+                Row {
+                    spacing: 8
+                    visible: antiDzSlider.value > 0
+                    Text { text: "Buffer:"; color: "#ccc"; font.pixelSize: 12; width: 70; verticalAlignment: Text.AlignVCenter; height: 30 }
+                    Basic.Slider {
+                        id: antiDzBufferSlider
+                        objectName: "antiDzBufferSlider"
+                        width: 140
+                        from: 0; to: 10; stepSize: 0.5
+                        value: 2
+                        onValueChanged: responseCurve.requestPaint()
+                        background: Rectangle {
+                            x: antiDzBufferSlider.leftPadding; y: antiDzBufferSlider.topPadding + antiDzBufferSlider.availableHeight / 2 - height / 2
+                            width: antiDzBufferSlider.availableWidth; height: 4; radius: 2; color: "#444"
+                            Rectangle { width: antiDzBufferSlider.visualPosition * parent.width; height: parent.height; radius: 2; color: "#22c55e" }
+                        }
+                        handle: Rectangle { x: antiDzBufferSlider.leftPadding + antiDzBufferSlider.visualPosition * (antiDzBufferSlider.availableWidth - width); y: antiDzBufferSlider.topPadding + antiDzBufferSlider.availableHeight / 2 - height / 2; width: 16; height: 16; radius: 8; color: "#fff" }
+                    }
+                    Text { text: antiDzBufferSlider.value.toFixed(1) + "%"; color: "#22c55e"; font.pixelSize: 11; width: 40; verticalAlignment: Text.AlignVCenter; height: 30 }
+                }
+
+                // Response curve preview, drawn from the bridge's own shaping
+                // function so the preview and the runtime cannot drift apart
                 Text { text: "Response Curve Preview"; color: "#888"; font.pixelSize: 10 }
                 Rectangle {
                     width: parent.width; height: 120
@@ -1238,16 +1414,24 @@ Item {
 
                     Canvas {
                         id: responseCurve
+                        objectName: "responseCurve"
                         anchors.fill: parent
                         anchors.margins: 4
+                        property real floorValue: 0     // smallest non-zero output
+                        property real ceilingValue: 1   // output at full deflection
                         onPaint: {
                             var ctx = getContext("2d")
                             ctx.clearRect(0, 0, width, height)
                             var w = width, h = height
-                            // Convert from percentage to internal units (same as config.py)
-                            var sens = sensitivitySlider.value / 100.0     // 0..1
-                            var dz = (deadZoneSlider.value / 100.0) * 0.25 // 0..0.25
-                            var edz = extremityDzSlider.value / 100.0      // 0..1
+                            var dz = (deadZoneSlider.value / 100.0) * 0.25 // 0..0.25, as config.py
+                            var pts = controller ? controller.shapeCurve(configDialog._shapeParamsJson()) : []
+                            var floorV = 0, ceilV = 0
+                            for (var k = 0; k < pts.length; k++) {
+                                if (pts[k] > 0 && floorV === 0) floorV = pts[k]
+                                ceilV = pts[k]
+                            }
+                            floorValue = floorV
+                            ceilingValue = ceilV
 
                             // Grid lines
                             ctx.strokeStyle = "#333"
@@ -1265,30 +1449,19 @@ Item {
                                 ctx.fillRect(0, 0, w * dz, h)
                             }
 
-                            // Curve (exact same formula as apply_joystick_dialog_curve)
+                            // Anti-deadzone floor: the band the game never sees
+                            if (floorV > 0.005) {
+                                ctx.fillStyle = "rgba(34,197,94,0.12)"
+                                ctx.fillRect(0, h - floorV * h, w, floorV * h)
+                            }
+
+                            // The curve itself
                             ctx.strokeStyle = "#4a9eff"
                             ctx.lineWidth = 2
                             ctx.beginPath()
                             var first = true
                             for (var i = 0; i <= 100; i++) {
-                                var input = i / 100.0
-                                var output
-                                if (input < dz) {
-                                    output = 0
-                                } else {
-                                    var availRange = 1.0 - dz
-                                    var normalized = availRange > 0 ? (input - dz) / availRange : 1
-                                    if (Math.abs(sens - 0.5) < 1e-9) {
-                                        output = normalized
-                                    } else if (sens < 0.5) {
-                                        var power = 1.0 + (0.5 - sens) * 6.0
-                                        output = Math.pow(normalized, power)
-                                    } else {
-                                        var power2 = 1.0 - (sens - 0.5) * 1.8
-                                        output = Math.pow(normalized, Math.max(0.1, power2))
-                                    }
-                                    if (edz > 0) output *= (1.0 - edz)
-                                }
+                                var output = i < pts.length ? pts[i] : i / 100.0
                                 var px = i / 100.0 * w
                                 var py = h - output * h
                                 if (first) { ctx.moveTo(px, py); first = false }
@@ -1302,6 +1475,110 @@ Item {
                             ctx.setLineDash([4, 4])
                             ctx.beginPath(); ctx.moveTo(0, h); ctx.lineTo(w, 0); ctx.stroke()
                             ctx.setLineDash([])
+                        }
+                    }
+                }
+                Text {
+                    text: "Smallest output " + responseCurve.floorValue.toFixed(3) + "   Largest output " + responseCurve.ceilingValue.toFixed(3)
+                    color: "#888"; font.pixelSize: 10
+                }
+
+                // Live test pad (joysticks): drag to see the shaped output for
+                // these unsaved settings. With the switch on, the output also
+                // drives the stick this widget maps, so the anti-deadzone can be
+                // raised until the smallest movement moves the game.
+                Row {
+                    spacing: 10
+                    visible: configDialog.targetWidget ? configDialog.targetWidget.type === "joystick" : false
+                    Rectangle {
+                        id: testPad
+                        objectName: "testPad"
+                        width: 90; height: 90; radius: 45
+                        color: "#1e1e1e"; border.color: testDriveSwitch.checked ? "#22c55e" : "#3d3d3d"; border.width: 2
+                        property real nx: 0
+                        property real ny: 0
+                        property real outX: 0
+                        property real outY: 0
+                        property real outMag: 0
+                        readonly property real padRadius: width / 2 - 10
+                        Rectangle {
+                            width: 16; height: 16; radius: 8
+                            color: "#2e6bd1"; border.color: "#6aa3ff"
+                            x: testPad.width / 2 + testPad.nx * testPad.padRadius - 8
+                            y: testPad.height / 2 + testPad.ny * testPad.padRadius - 8
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            // The pad lives inside configFlickable, which can steal the
+                            // mouse grab during a vertical drag. Without onCanceled the
+                            // pad never sees its release, so with "Drive the controller"
+                            // on it left the real stick holding its last deflection.
+                            preventStealing: true
+                            function _update(mouse, release) {
+                                var nx = release ? 0 : (mouse.x - testPad.width / 2) / testPad.padRadius
+                                var ny = release ? 0 : (mouse.y - testPad.height / 2) / testPad.padRadius
+                                var m = Math.sqrt(nx * nx + ny * ny)
+                                if (m > 1) { nx /= m; ny /= m }
+                                testPad.nx = nx; testPad.ny = ny
+                                if (!controller) return
+                                var res = controller.previewStick(configDialog.targetWidgetId, nx, ny,
+                                                                  configDialog._shapeParamsJson(), testDriveSwitch.checked)
+                                testPad.outX = res[0]; testPad.outY = res[1]; testPad.outMag = res[2]
+                            }
+                            onPressed: function(mouse) { _update(mouse, false) }
+                            onPositionChanged: function(mouse) { if (pressed) _update(mouse, false) }
+                            onReleased: function(mouse) { _update(mouse, true) }
+                            // A cancelled grab has to centre the output too, and
+                            // _update reads mouse.x/y, so recentre without one.
+                            onCanceled: _recenter()
+                            function _recenter() {
+                                testPad.nx = 0; testPad.ny = 0
+                                if (!controller) return
+                                var res = controller.previewStick(configDialog.targetWidgetId, 0, 0,
+                                                                  configDialog._shapeParamsJson(), testDriveSwitch.checked)
+                                testPad.outX = res[0]; testPad.outY = res[1]; testPad.outMag = res[2]
+                            }
+                        }
+                    }
+                    Column {
+                        spacing: 4
+                        anchors.verticalCenter: parent.verticalCenter
+                        Text { text: "Test pad"; color: "#aaa"; font.pixelSize: 11; font.bold: true }
+                        Text {
+                            text: "In " + Math.sqrt(testPad.nx * testPad.nx + testPad.ny * testPad.ny).toFixed(2)
+                                  + "   Out " + testPad.outMag.toFixed(2)
+                                  + "  (X " + testPad.outX.toFixed(2) + "  Y " + (-testPad.outY).toFixed(2) + ")"
+                            color: "#ccc"; font.pixelSize: 11
+                        }
+                        Row {
+                            spacing: 8
+                            Rectangle {
+                                id: testDriveSwitch
+                                objectName: "testDriveSwitch"
+                                property bool checked: false
+                                width: 44; height: 22; radius: 11
+                                color: checked ? "#22c55e" : "#555"
+                                Rectangle {
+                                    width: 18; height: 18; radius: 9; color: "white"
+                                    x: parent.checked ? parent.width - width - 2 : 2
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    Behavior on x { NumberAnimation { duration: 120 } }
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    onClicked: {
+                                        parent.checked = !parent.checked
+                                        // Switching off while deflected: centre the real stick
+                                        if (!parent.checked && controller) controller.previewStick(configDialog.targetWidgetId, 0, 0, "{}", true)
+                                    }
+                                }
+                            }
+                            Text {
+                                text: testDriveSwitch.checked ? "Driving the controller" : "Drive the controller"
+                                color: testDriveSwitch.checked ? "#22c55e" : "#aaa"
+                                font.pixelSize: 11
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
                         }
                     }
                 }
@@ -1332,6 +1609,7 @@ Item {
                 Text { anchors.centerIn: parent; text: "Apply"; color: "white"; font.pixelSize: 12; font.bold: true }
                 MouseArea {
                     id: applyConfigArea
+                    objectName: "applyConfigButton"
                     anchors.fill: parent
                     hoverEnabled: true
                     onClicked: {
@@ -1346,6 +1624,7 @@ Item {
                             _updateWidgetProp(wid, "color", colorField.text)
                             _updateWidgetProp(wid, "shape", shapeCombo.currentText)
                             _updateWidgetProp(wid, "toggle_mode", toggleModeSwitch.checked)
+                            _updateWidgetProp(wid, "modifier", ["none", "precision"][modifierCombo.currentIndex] || "none")
                         }
 
                         if (wType === "joystick") {
@@ -1362,6 +1641,8 @@ Item {
                             _updateWidgetProp(wid, "auto_center_delay", autoCenterDelaySlider.value)
                             _updateWidgetProp(wid, "lock_sensitivity", lockSensSlider.value)
                             _updateWidgetProp(wid, "tremor_filter", tremorFilterSlider.value)
+                            _updateWidgetProp(wid, "travel_px", travelSlider.value)
+                            _updateWidgetProp(wid, "precision_gain", precisionSlider.value / 100.0)
                             _updateWidgetProp(wid, "macro_mode", macroModeSwitch.checked)
                             _updateWidgetProp(wid, "macro_config", configDialog._currentMacroConfig)
                         }
@@ -1391,6 +1672,8 @@ Item {
                             _updateWidgetProp(wid, "sensitivity", sensitivitySlider.value)
                             _updateWidgetProp(wid, "dead_zone", deadZoneSlider.value)
                             _updateWidgetProp(wid, "extremity_dead_zone", extremityDzSlider.value)
+                            _updateWidgetProp(wid, "anti_deadzone", antiDzSlider.value / 100.0)
+                            _updateWidgetProp(wid, "anti_deadzone_buffer", antiDzBufferSlider.value / 100.0)
                         }
 
                         configDialog.visible = false
@@ -1538,6 +1821,29 @@ Item {
             }
         }
         return { x: 10, y: 10 }  // fallback
+    }
+
+    // Widgets whose centre lies inside a later widget's rectangle. The later
+    // one is drawn on top, so a press at that centre lands on it instead of
+    // the widget underneath; the editor shows these in a banner.
+    function _overlappingWidgets(model) {
+        var out = []
+        if (!model) return out
+        for (var i = 0; i < model.length; i++) {
+            var a = model[i]
+            var cx = (a.x || 0) + (a.width || 0) / 2
+            var cy = (a.y || 0) + (a.height || 0) / 2
+            for (var j = i + 1; j < model.length; j++) {
+                var b = model[j]
+                var bx = b.x || 0
+                var by = b.y || 0
+                if (cx >= bx && cx <= bx + (b.width || 0) && cy >= by && cy <= by + (b.height || 0)) {
+                    out.push((a.label || a.id) + " under " + (b.label || b.id))
+                    break
+                }
+            }
+        }
+        return out
     }
 
     function _addWidget(data) {

@@ -68,3 +68,13 @@ research/
 TODO.md
 build_tools/CODE_SIGNING.md
 docs/development/LLM_NOTES.md
+
+# Kernel driver build outputs (driver/)
+driver/nimbus_moufilter/x64/
+driver/nimbus_moufilter/ARM64/
+driver/out/
+driver/**/*.log
+tests/probe_frames/
+
+# ---- Bundled third-party driver setups (fetched by build_tools/fetch_redist.ps1) ----
+build_tools/redist/

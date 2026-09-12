@@ -1,5 +1,5 @@
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
 /*
@@ -13,17 +13,25 @@ import QtQuick.Layouts
  *   - Sign Out button
  *
  * Exposed context properties used:
- *   - cloud  (CloudClient)  — from qt_qml_app.py
+ *   - controller (ControllerBridge)
  */
 
 Dialog {
     id: accountDialog
-    title: cloud && cloud.is_authenticated ? "Account" : "Sign In"
+    title: controller && controller.accountAuthenticated ? "Account" : "Sign In"
     modal: true
-    width: 420
-    height: contentColumn.implicitHeight + 80
+    width: Math.min(420, parent ? parent.width - 32 : 420)
+    height: Math.min(contentColumn.implicitHeight + 80, parent ? parent.height - 32 : 600)
     anchors.centerIn: parent
     padding: 24
+
+    header: Label {
+        text: accountDialog.title
+        color: "#dddddd"
+        font.pixelSize: 16
+        padding: 16
+        background: Rectangle { color: "#252525" }
+    }
 
     background: Rectangle {
         color: "#1a1a1a"
@@ -37,15 +45,22 @@ Dialog {
     property bool isLoading: false
     property string errorMessage: ""
 
+    contentItem: Flickable {
+        id: accountScroll
+        contentHeight: contentColumn.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        ScrollBar.vertical: ScrollBar {}
+
     ColumnLayout {
         id: contentColumn
-        anchors.fill: parent
+        width: accountScroll.width
         spacing: 16
 
         // ---- Header ----
         Label {
-            text: cloud && cloud.is_authenticated
-                  ? "Welcome, " + cloud.display_name
+            text: controller && controller.accountAuthenticated
+                ? "Welcome, " + controller.accountDisplayName
                   : (accountDialog.isSignUp ? "Create Account" : "Sign In to Nimbus")
             font.pixelSize: 18
             font.bold: true
@@ -55,7 +70,7 @@ Dialog {
 
         // ---- Signed-In View ----
         ColumnLayout {
-            visible: cloud && cloud.is_authenticated
+            visible: controller && controller.accountAuthenticated
             spacing: 12
             Layout.fillWidth: true
 
@@ -69,7 +84,7 @@ Dialog {
                     color: "#4a9eff"
                     Label {
                         anchors.centerIn: parent
-                        text: cloud ? cloud.display_name.charAt(0).toUpperCase() : "?"
+                        text: controller ? controller.accountDisplayName.charAt(0).toUpperCase() : "?"
                         font.pixelSize: 20; font.bold: true; color: "#ffffff"
                     }
                 }
@@ -77,15 +92,15 @@ Dialog {
                 ColumnLayout {
                     spacing: 2
                     Label {
-                        text: cloud ? cloud.display_name : ""
+                        text: controller ? controller.accountDisplayName : ""
                         font.pixelSize: 14; color: "#ffffff"
                     }
                     Label {
-                        text: cloud && cloud.user ? cloud.user.email || "" : ""
+                        text: controller ? controller.accountEmail : ""
                         font.pixelSize: 11; color: "#888888"
                     }
                     Label {
-                        text: cloud ? ("Tier: " + cloud.tier.replace("_", " ").toUpperCase()) : ""
+                        text: controller ? ("Tier: " + controller.accountTier.replace("_", " ").toUpperCase()) : ""
                         font.pixelSize: 11; color: "#4a9eff"
                     }
                 }
@@ -94,10 +109,10 @@ Dialog {
             // Sync button (Nimbus+ only)
             Button {
                 text: "Sync Profiles"
-                visible: cloud && cloud.is_premium
+                visible: controller && controller.accountPremium
                 Layout.fillWidth: true
                 Layout.preferredHeight: 36
-                onClicked: cloud.sync_profiles()
+                onClicked: controller.syncProfiles()
                 background: Rectangle {
                     color: parent.hovered ? "#3a8eef" : "#4a9eff"
                     radius: 6
@@ -114,7 +129,7 @@ Dialog {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 36
                 onClicked: {
-                    cloud.logout()
+                    controller.logoutAccount()
                     accountDialog.close()
                 }
                 background: Rectangle {
@@ -130,18 +145,21 @@ Dialog {
 
         // ---- Sign-In / Sign-Up View ----
         ColumnLayout {
-            visible: !cloud || !cloud.is_authenticated
+            visible: !controller || !controller.accountAuthenticated
             spacing: 12
             Layout.fillWidth: true
 
             // OAuth buttons
             Button {
                 id: googleBtn
+                enabled: false
+                ToolTip.text: "Browser sign-in is not available in this build"
+                ToolTip.visible: hovered
                 Layout.fillWidth: true
                 Layout.preferredHeight: 42
                 onClicked: {
                     accountDialog.isLoading = true
-                    cloud.login_with_browser("google")
+                    controller.loginWithProvider("google")
                 }
                 background: Rectangle {
                     color: googleBtn.hovered ? "#ffffff" : "#f5f5f5"
@@ -158,11 +176,14 @@ Dialog {
 
             Button {
                 id: facebookBtn
+                enabled: false
+                ToolTip.text: "Browser sign-in is not available in this build"
+                ToolTip.visible: hovered
                 Layout.fillWidth: true
                 Layout.preferredHeight: 42
                 onClicked: {
                     accountDialog.isLoading = true
-                    cloud.login_with_browser("facebook")
+                    controller.loginWithProvider("facebook")
                 }
                 background: Rectangle {
                     color: facebookBtn.hovered ? "#1565C0" : "#1877F2"
@@ -289,6 +310,7 @@ Dialog {
             }
         }
     }
+    }
 
     function submitEmail() {
         if (emailField.text.length === 0 || passwordField.text.length === 0) return
@@ -297,9 +319,9 @@ Dialog {
 
         var success
         if (accountDialog.isSignUp) {
-            success = cloud.signup_with_email(emailField.text, passwordField.text)
+            success = controller.signupWithEmail(emailField.text, passwordField.text)
         } else {
-            success = cloud.login_with_email(emailField.text, passwordField.text)
+            success = controller.loginWithEmail(emailField.text, passwordField.text)
         }
 
         accountDialog.isLoading = false

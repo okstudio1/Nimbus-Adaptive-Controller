@@ -34,23 +34,8 @@ logo_datas = [(str(PROJECT_ROOT / 'logo.png'), '.')]
 # Add controller config template
 config_datas = [(str(PROJECT_ROOT / 'controller_config.json'), '.')]
 
-# Add vgamepad DLLs — PyInstaller cannot auto-detect ctypes-loaded DLLs
-# These must be explicitly bundled so ViGEmClient.dll is found at runtime
-vgamepad_site = PROJECT_ROOT / 'venv' / 'Lib' / 'site-packages' / 'vgamepad'
-vgamepad_binaries = []
-vgamepad_extra_datas = []
-if vgamepad_site.exists():
-    x64_dll = vgamepad_site / 'win' / 'vigem' / 'client' / 'x64' / 'ViGEmClient.dll'
-    x86_dll = vgamepad_site / 'win' / 'vigem' / 'client' / 'x86' / 'ViGEmClient.dll'
-    if x64_dll.exists():
-        vgamepad_binaries.append((str(x64_dll), 'vgamepad/win/vigem/client/x64'))
-    if x86_dll.exists():
-        vgamepad_binaries.append((str(x86_dll), 'vgamepad/win/vigem/client/x86'))
-    # Collect all non-Python vgamepad files (installers, manifests, etc.)
-    for _f in vgamepad_site.rglob('*'):
-        if _f.is_file() and _f.suffix not in ('.py', '.pyc') and 'ViGEmClient.dll' not in _f.name:
-            _rel = _f.relative_to(vgamepad_site.parent)
-            vgamepad_extra_datas.append((str(_f), str(_rel.parent)))
+# The virtual pad client (src/padbus_client.py) is pure ctypes over the bus
+# driver's device interface, so there is no client DLL to bundle.
 
 # Add profiles directory
 profile_datas = []
@@ -73,7 +58,7 @@ if src_path.exists():
 numpy_datas, numpy_binaries, numpy_hidden = collect_all('numpy')
 
 # Combine all data files
-datas = qml_datas + logo_datas + config_datas + profile_datas + src_datas + vgamepad_extra_datas + numpy_datas
+datas = qml_datas + logo_datas + config_datas + profile_datas + src_datas + numpy_datas
 
 # Hidden imports for PySide6 and other dependencies
 hiddenimports = [
@@ -97,6 +82,7 @@ hiddenimports = [
     'src.config',
     'src.vjoy_interface',
     'src.vigem_interface',
+    'src.padbus_client',
     'src.qt_dialogs',
     'src.qt_widgets',
     'src.borderless',
@@ -107,7 +93,7 @@ hiddenimports = [
 a = Analysis(
     [main_script],
     pathex=[str(PROJECT_ROOT)],  # Add project root so 'src' package is found
-    binaries=vgamepad_binaries + numpy_binaries,
+    binaries=numpy_binaries,
     datas=datas,
     hiddenimports=hiddenimports + numpy_hidden,
     hookspath=[],

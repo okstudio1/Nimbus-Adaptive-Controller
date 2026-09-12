@@ -129,6 +129,7 @@ class TelemetryClient(QObject):
 
         # Local fallback file for unsent events
         self._offline_path: Path = _get_telemetry_dir() / "pending_events.json"
+        self._purge_disallowed()
 
         # Flush timer
         self._flush_timer = QTimer(self)
@@ -158,6 +159,7 @@ class TelemetryClient(QObject):
     @analytics_enabled.setter
     def analytics_enabled(self, value: bool) -> None:
         self._analytics_enabled = value
+        self._purge_disallowed()
         self._config.set("telemetry.analytics_enabled", value)
         self._config.save_config()
         self._update_timer()
@@ -170,10 +172,12 @@ class TelemetryClient(QObject):
     @crash_reports_enabled.setter
     def crash_reports_enabled(self, value: bool) -> None:
         self._crash_reports_enabled = value
+        self._purge_disallowed()
         self._config.set("telemetry.crash_reports_enabled", value)
         self._config.save_config()
         if value and not self._sentry_initialised:
             self._init_sentry()
+        self._update_timer()
 
     def track(self, event: str, props: Optional[Dict[str, Any]] = None) -> None:
         """
@@ -369,6 +373,31 @@ class TelemetryClient(QObject):
     def _is_enabled(self) -> bool:
         return self._analytics_enabled or self._crash_reports_enabled
 
+    def _consented_events(self, events: Any) -> List[Dict[str, Any]]:
+        if not isinstance(events, list):
+            return []
+        schema = self.event_schema()
+        return [event for event in events if isinstance(event, dict)
+            and isinstance(event.get("event"), str)
+                and event.get("event") in schema
+                and not str(event.get("event")).startswith("_")
+                and (self._crash_reports_enabled if event["event"] == "crash"
+                     else self._analytics_enabled)]
+
+    def _purge_disallowed(self) -> None:
+        self._buffer = self._consented_events(self._buffer)
+        if not self._offline_path.exists():
+            return
+        try:
+            previous = json.loads(self._offline_path.read_text("utf-8"))
+            permitted = self._consented_events(previous)
+            if not permitted:
+                self._offline_path.unlink(missing_ok=True)
+            elif permitted != previous:
+                self._offline_path.write_text(json.dumps(permitted, indent=2), "utf-8")
+        except (OSError, ValueError):
+            logger.warning("Unable to purge disabled telemetry categories from the local queue.")
+
     def _ensure_user_id(self) -> str:
         """Get or create a stable anonymous user ID stored in config."""
         uid = self._config.get("telemetry.user_id", None)
@@ -401,6 +430,8 @@ class TelemetryClient(QObject):
                 release=f"nimbus-adaptive-controller@{self._app_version()}",
                 environment=os.environ.get("NIMBUS_ENV", "production"),
                 traces_sample_rate=0.0,  # no performance traces (PII risk)
+                send_default_pii=False,
+                include_local_variables=False,
                 before_send=self._scrub_sentry_event,
             )
             self._sentry_initialised = True
@@ -411,38 +442,54 @@ class TelemetryClient(QObject):
             logger.warning("Failed to initialise Sentry: %s", e)
 
     @staticmethod
-    def _scrub_sentry_event(event: Dict, hint: Dict) -> Optional[Dict]:
+    def _fingerprint_source(values: Any) -> str:
+        """A machine-independent identity for a crash, for grouping.
+
+        Only the exception type and the code position of each frame, never a
+        path, a message or a local. Hashing the raw exception values instead
+        would be private (the hash is one way) but useless: they carry
+        ``abs_path``, so the same crash fingerprints differently on every
+        install and Sentry shows one group per user rather than one per bug.
         """
-        Sentry ``before_send`` callback — strip PII before transmission.
+        parts: List[str] = []
+        for exception in values:
+            if not isinstance(exception, dict):
+                continue
+            parts.append(str(exception.get("type", "Exception")))
+            frames = (exception.get("stacktrace") or {}).get("frames", []) or []
+            for frame in frames:
+                if not isinstance(frame, dict):
+                    continue
+                # module and function are code identity; abs_path and filename
+                # are install identity and are deliberately left out.
+                parts.append("{0}:{1}:{2}".format(frame.get("module", ""),
+                                                  frame.get("function", ""),
+                                                  frame.get("lineno", "")))
+        return "|".join(parts)
 
-        Removes:
-        - Absolute file paths that may reveal the user's OS username
-        - Request bodies (belt-and-suspenders)
-        - Environment variables
-        """
-        # Strip absolute paths from stack frames
-        if "exception" in event:
-            for exc_info in event["exception"].get("values", []):
-                for frame in exc_info.get("stacktrace", {}).get("frames", []):
-                    if "abs_path" in frame:
-                        # Keep only the filename, not the full path
-                        abs_path = frame["abs_path"]
-                        frame["abs_path"] = os.path.basename(abs_path)
-
-        # Remove any request data
-        event.pop("request", None)
-
-        # Remove environment-level server name
-        event.pop("server_name", None)
-
-        # Remove extra contexts that may contain PII
-        contexts = event.get("contexts", {})
-        contexts.pop("os", None)
-
-        return event
+    def _scrub_sentry_event(self, event: Dict, hint: Dict) -> Optional[Dict]:
+        """Allow only exception types and a hashed fingerprint into Sentry."""
+        if not self._crash_reports_enabled:
+            return None
+        values = (event.get("exception") or {}).get("values", [])
+        if not values:
+            return None
+        exceptions = []
+        for exception in values:
+            name = exception.get("type", "Exception") if isinstance(exception, dict) else "Exception"
+            if not isinstance(name, str) or not name.isidentifier():
+                name = "Exception"
+            exceptions.append({"type": name, "value": "Exception details omitted"})
+        return {
+            "level": "error",
+            "release": "nimbus-adaptive-controller@" + self._app_version(),
+            "exception": {"values": exceptions},
+            "fingerprint": [_hash(self._fingerprint_source(values))],
+        }
 
     def _flush(self) -> None:
         """Send buffered events to the Nimbus Cloud API (or persist locally)."""
+        self._buffer = self._consented_events(self._buffer)
         if not self._buffer:
             # Also try to send any offline-persisted events
             self._retry_offline()
@@ -486,7 +533,10 @@ class TelemetryClient(QObject):
                 except (json.JSONDecodeError, ValueError):
                     existing = []
 
-            combined = existing + events
+            combined = self._consented_events(existing) + self._consented_events(events)
+            if not combined:
+                self._offline_path.unlink(missing_ok=True)
+                return
             # Cap to prevent unbounded growth
             if len(combined) > MAX_OFFLINE_EVENTS:
                 combined = combined[-MAX_OFFLINE_EVENTS:]
@@ -502,8 +552,9 @@ class TelemetryClient(QObject):
         if not self._offline_path.exists():
             return
         try:
-            events = json.loads(self._offline_path.read_text("utf-8"))
+            events = self._consented_events(json.loads(self._offline_path.read_text("utf-8")))
             if not events:
+                self._offline_path.unlink(missing_ok=True)
                 return
 
             import httpx

@@ -1,0 +1,22 @@
+{
+    "name": "eldenring",
+    "title": "ELDEN RING",
+    "process": "eldenring.exe",
+    "steam_exe": "C:\\Program Files (x86)\\Steam\\steam.exe",
+    "steam_app_id": 1245620,
+    "game_dir": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\ELDEN RING\\Game",
+    "launch_args": [],
+    "window_timeout_s": 300,
+    "ready_timeout_s": 240,
+    "warmup_s": 10,
+    "turn_right_sign": -1,
+    "oracle": {"type": "frame_diff"},
+    "window": {"w": 1280, "h": 720, "x": 0, "y": 0, "borderless": true},
+    "ready_sequence": [
+        {"wait": 30, "note": "publisher logos"},
+        {"press_until_control": [1], "action": {"rx": 1.0}, "hold": 0.6, "interval": 5, "timeout": 180,
+         "note": "A through the unclean-exit notice, press any button and Continue, until the right stick turns the camera"}
+    ],
+    "reset_pose": null,
+    "notes": "EasyAntiCheat: refuses to start under test signing, so check CodeIntegrityOptions first (0x2 set means test signing is on). No console, so the frame-differencing oracle: every verdict is MOVED or STILL against a one-second noise floor, there is no reset, and the sweep gives frame verdicts only. Runs full screen at the desktop resolution (GraphicsConfig.xml under %APPDATA%\\EldenRing, a .nimbus-probe.bak beside it). That is the game's own choice; the recipe's window key asks for 1280x720 borderless, which the game takes at launch, undoes while it loads (the readiness stick test still saw 102,480 samples, the full-screen count) and takes again when the harness re-applies it at readiness (2026-09-09), so every measured step runs at 1280x720 and 25,600 samples. Frame verdicts are motion verdicts now: the shift floor of 8 px is about 0.6 degrees at that width, close to the 1 degree the console games count as a turn, and by it the camera reads still at 0.26 and 0.28 (a coherent 4 to 5 px, a fraction of a degree in the second) and moved from 0.30, where the old changed-sample rule against a full-screen capture had put the threshold at or below 0.20. Because the harness kills the game at the end of a run, the next start shows a notice that the last session was not quit from the menu, with an OK button in front of the title screen. The sequence therefore tests the right stick and, while it does nothing, presses A every five seconds: OK, press any button, Continue, then ignored presses while the save loads; the main menu's gold shimmer is a few hundred changed samples, a camera turn tens of thousands, so 'moved' is a twentieth of the frame. In-world A is interact, so a press that landed after the world appeared but before the next stick test could open a site-of-grace menu; the test runs first each cycle to keep that window to a fraction of a second. Movement checks walk the character wherever the save left it, so a wall or a cliff is possible; the frame verdict still says whether the view changed."
+}

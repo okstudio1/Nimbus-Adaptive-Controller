@@ -29,6 +29,7 @@
 ### 3. Build Installer & Sign
 
 ```powershell
+powershell -ExecutionPolicy Bypass -File build_tools\fetch_redist.ps1   # bundled vJoy + ViGEmBus setups
 & "C:\Program Files (x86)\NSIS\makensis.exe" build_tools\installer.nsi
 cmd /c build_tools\sign_exe.bat
 ```

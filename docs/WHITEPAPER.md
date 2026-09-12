@@ -43,7 +43,7 @@ This paper documents how that pipeline is constructed, what design choices it em
 
 ## 3. System Overview
 
-Nimbus is a Python 3.8+ application built on PySide6 (Qt 6) with a Qt Quick (QML) presentation layer and a small Python core. It links to one of two virtual-driver bindings — `pyvjoy` for vJoy and `vgamepad` for ViGEm — and exposes its runtime to QML through a single bridge object.
+Nimbus is a Python 3.8+ application built on PySide6 (Qt 6) with a Qt Quick (QML) presentation layer and a small Python core. It drives one of two virtual drivers, vJoy through `pyvjoy` and ViGEmBus through its own pure-Python bus client (`src/padbus_client.py`), and exposes its runtime to QML through a single bridge object.
 
 ```
    ┌──────────────────────────────────────────────────────────────┐
@@ -101,12 +101,14 @@ A user with limited grip strength cannot hold a mouse button down for the durati
 
 ### 4.3 Deadzone
 
-Two deadzones are applied per axis:
+Two deadzones are applied to the stick vector's magnitude, so the dead region is a circle and diagonals respond like cardinals:
 
 - **Centre deadzone** — a circular region around the origin in which output is forced to zero. This eliminates tremor, switch chatter, and the unintentional micro-movements typical of head- and eye-tracking systems.
 - **Extremity deadzone** — a scaling factor that reduces the maximum reachable output. This prevents over-travel for users who cannot consistently *avoid* the rim of a joystick widget, and is the symmetric counterpart of the centre deadzone.
 
 Both deadzones are configured as percentages (0–100 %) and stored per widget in the profile JSON.
+
+A third control works on the other side of the driver. Most games discard stick input below an inner deadzone of their own (24 % and 26.5 % for the documented XInput constants), which would swallow the first quarter of the widget's travel. The **output anti-deadzone** lifts the smallest non-zero output to that floor, so the smallest movement the user can make is the smallest movement the game will accept, and the game's own aim assistance, which engages only above its deadzone, sees the input at all. It defaults to the XInput constants when the output is an Xbox controller and is calibrated per widget against a running game.
 
 ### 4.4 Sensitivity Curve
 
@@ -118,7 +120,7 @@ exponent = sensitivity_to_exponent(sensitivity)
 output  = sign(input) · |input| ^ exponent
 ```
 
-A sensitivity of 50 % yields an exponent of 1.0 (linear). Values below 50 % flatten the curve near the centre, providing fine control for small movements at the cost of speed at the rim. Values above 50 % steepen the curve, giving rapid response near centre — desirable for combat games or rover yaw control, but unsuitable for sustained precision work like a UAV gimbal. The same formula is implemented in two places — `config.py:apply_joystick_dialog_curve()` for Python-side processing and `_applyCurve()` in `DraggableWidget.qml` for live preview — and the dialog draws the curve in real time as the user adjusts it.
+A sensitivity of 50 % yields an exponent of 1.0 (linear). Values below 50 % flatten the curve near the centre, providing fine control for small movements at the cost of speed at the rim. Values above 50 % steepen the curve, giving rapid response near centre — desirable for combat games or rover yaw control, but unsuitable for sustained precision work like a UAV gimbal. The formula is implemented once, in `config.py` (`shape_magnitude`), and applied by the bridge; the dialog's live preview asks the bridge for the curve's points, so what is drawn is what the driver receives.
 
 ### 4.5 Smoothing
 
@@ -126,7 +128,7 @@ The bridge maintains, per axis, a target value updated by the QML layer at the u
 
 ### 4.6 Driver Emission
 
-The smoothed, curved, deadzoned value — still in normalised `[-1, 1]` form — is mapped onto the driver's integer axis range and submitted via `pyvjoy.VJoyDevice.set_axis()` or `vgamepad.VX360Gamepad.left_joystick_float()`. Buttons are submitted as boolean state changes; toggle-mode buttons are debounced at the QML layer before reaching the bridge.
+The smoothed, curved, deadzoned value, still in normalised `[-1, 1]` form, is mapped onto the driver's integer axis range and submitted via `pyvjoy.VJoyDevice.set_axis()` or `X360Pad.left_joystick_float()` from `src/padbus_client.py`. Buttons are submitted as boolean state changes; toggle-mode buttons are debounced at the QML layer before reaching the bridge.
 
 ### 4.7 Failsafe
 
@@ -189,7 +191,7 @@ Layouts are persisted on every meaningful state change — widget move, widget r
 
 ## 6. Output Backends
 
-Nimbus supports two virtual controller drivers. The choice is per-profile and is auto-selected from the profile's declared `layout_type`. Profiles of type `xbox`, `adaptive`, or `custom` route through ViGEm — these are layouts a user is most likely to point at modern XInput-only titles — while `flight_sim` profiles route through vJoy, since flight and ground-control software depends on the larger DirectInput axis and button budget. The user can override the auto-selection at any time from the status ribbon, and `controller.prefer_vigem` in the config is consulted as a tiebreaker; vJoy is also used as a fallback when the `vgamepad` package or the ViGEmBus driver is absent.
+Nimbus supports two virtual controller drivers. The choice is per-profile and is auto-selected from the profile's declared `layout_type`. Profiles of type `xbox`, `adaptive`, or `custom` route through ViGEm (these are layouts a user is most likely to point at modern XInput-only titles), while `flight_sim` profiles route through vJoy, since flight and ground-control software depends on the larger DirectInput axis and button budget. The user can override the auto-selection at any time from the status ribbon, and `controller.prefer_vigem` in the config is consulted as a tiebreaker; vJoy is also used as a fallback when the ViGEmBus driver is absent.
 
 ### 6.1 vJoy (DirectInput)
 
@@ -234,6 +236,12 @@ Nimbus solves this with a built-in borderless-gaming layer (`src/borderless.py`)
 - **Auto-detection.** A built-in compatibility table covering 30+ games is consulted on launch to suggest known-working configurations.
 
 The trade-off is that this technique is detectable and could be misclassified by anti-cheat systems. Nimbus does not modify game memory, hook game APIs, or interfere with input on the game's side; it operates entirely on the Windows window/cursor layer, the same layer used by routine accessibility tools. To date no anti-cheat false positives have been reported, but the design choice to operate at the OS layer rather than at the game layer is deliberate and should be preserved.
+
+### 8.1 The Raw Input tier
+
+Cursor liberation and the `WH_MOUSE_LL` hook cover games that read the mouse through the cursor and `WM_MOUSEMOVE`. Games that register for Raw Input (`WM_INPUT`) are a separate tier, and it was measured on Windows 11 25H2 in September 2026 rather than reasoned about: a low-level hook that drops every mouse event leaves `WM_INPUT` untouched, the only user-mode action that stops `WM_INPUT` is taking the foreground away from the game, and Elden Ring then ignores the gamepad as well. Microsoft's HID architecture opens mouse collections exclusively for the Raw Input Manager, so no user-mode process can read or block them. The measurements and the survey of existing drivers are in `docs/vision/HOST_MODE_ISOLATION.md`, sections 8 and 9.
+
+The consequence is architectural: for that tier Nimbus must own the mouse below `win32k`. On Linux that is one `EVIOCGRAB` ioctl (the `linux-uinput-support` branch). On Windows it is a small KMDF upper filter on the mouse class, the Nimbus Mouse Filter in `driver/`, which passes everything through until Nimbus asks for isolation and then hands the packets to Nimbus instead of `mouclass`. On Windows, Nimbus then moves the real cursor itself with `SetCursorPos`, which creates no input event: the cursor keeps working on the desktop and on Nimbus, the game keeps the foreground and its gamepad, and the game's Raw Input stream stays empty (the cursor relay; on Linux, where re-injection would be visible to the game, Nimbus draws its own cursor instead). A test-signed development build was validated on hardware in September 2026: with isolation on, a Raw Input consumer received nothing while the driver captured every packet from the physical mouse, the mouse returned on release, Left 4 Dead 2 with raw input on stayed still under relayed motion, and the real application drove its virtual stick from a captured drag while the game saw nothing. It is not yet attestation-signed, not validated against an anti-cheat title, and not part of any release. Design and status: `docs/vision/WINDOWS_MOUSE_FILTER_PLAN.md`.
 
 ---
 
@@ -288,7 +296,7 @@ The platform is positioned to extend in four directions, each preserving the sam
 
 **Voice command integration.** Buttons, axes, and macros triggered by speech, using Faster-Whisper or Vosk for offline low-latency execution. Time-critical commands act on interim recognition results.
 
-**Spectator+ — AI-assisted execution.** A trained agent translates high-level intent (issued by voice, dwell, or switch) into precise sequences of axis and button events through the existing virtual driver bridge. The user remains the cognitive and tactical authority; the AI executes the motor sequence.
+**Spectator+, AI-assisted execution.** A trained agent translates high-level intent (issued by voice, dwell, or switch) into precise sequences of axis and button events through the existing virtual driver bridge. The user remains the cognitive and tactical authority; the AI executes the motor sequence. The first step is in the tree without a model: scripted primitives (turn by an angle, walk for a distance, press a button) executed by the bridge from a per-game calibration that a game test harness measures from the game's own console. In Left 4 Dead 2 they land within a few degrees of the angle asked for; in Half-Life 2, whose stick response puts more than half the turn into the first tenth of a second, the same primitives are repeatably long, which is the honest measure of how far open-loop execution goes and why the closed loop is the next step (`docs/vision/GAME_TEST_HARNESS.md`, section 4.7).
 
 **Keyboard-output mode.** Any widget emits native keyboard shortcuts. This re-purposes the platform as a Stream Deck replacement, drawing-tablet express-key surface, or DAW controller, and re-uses the entire layout / persistence stack.
 
@@ -298,13 +306,15 @@ The platform is positioned to extend in four directions, each preserving the sam
 
 **Research platform.** With opt-in telemetry, Nimbus could function as a research instrument for studying how people with disabilities engage with games, in collaboration with AbleGamers, Shirley Ryan AbilityLab, CMU HCII, and similar institutions.
 
+**Mouse isolation.** Closing the Raw Input tier (§ 8.1) with the Nimbus Mouse Filter on Windows and the `EVIOCGRAB` grab on Linux, so that Elden Ring-class games see only the virtual pad. The bridge half (the isolation API, the click policy, the Isolate Mouse toggle) is shared between platforms; the source of deltas and what happens to the cursor differ (the cursor relay on Windows, a software cursor on Linux).
+
 ---
 
 ## 13. Build, Distribution, and Engineering Practices
 
 Nimbus is distributed in three forms:
 
-- **Source.** `python run.py` bootstraps a virtual environment, installs dependencies (PySide6, pyvjoy, vgamepad, numpy, keyring, httpx, sentry-sdk), and launches the QML app. All Win32 integration uses the standard-library `ctypes` module — there is no `pywin32` dependency, by design.
+- **Source.** `python run.py` bootstraps a virtual environment, installs dependencies (PySide6, pyvjoy, numpy, keyring, httpx, sentry-sdk), and launches the QML app. All Win32 integration uses the standard-library `ctypes` module. There is no `pywin32` dependency, by design.
 - **Portable executable.** A single-file PyInstaller build with all assets and dependencies bundled.
 - **Installer.** An NSIS installer that detects existing vJoy and ViGEmBus installations (via 64-bit registry views), creates Start Menu shortcuts, and launches the application post-install at the user's privilege level rather than the installer's elevated level.
 
