@@ -357,17 +357,29 @@ class MouseIsolation:
 
     def _grab_one(self, dev: Dict[str, Any]) -> None:
         fd = os.open(dev["node"], os.O_RDONLY | os.O_NONBLOCK)
+        # Bound before the try: _key_capabilities can raise, and the cleanup
+        # path below has to be able to ask whether a keyboard was built yet.
+        passthrough = None
         try:
             keys = _key_capabilities(fd)
             # Keyboard keys: everything below the mouse-button block, plus the
             # extra keys above it but below the joystick/trigger-happy range.
             kb_keys = [k for k in keys if k < BTN_MOUSE or (BTN_TASK < k < 0x2C0)]
-            passthrough = None
             if dev.get("is_keyboard") or any(k < BTN_MOUSE for k in kb_keys):
                 # Refuse to silence a keyboard: only grab if we can re-emit its keys.
                 passthrough = _PassthroughKeyboard(dev["name"] or "Keyboard", kb_keys)
             fcntl.ioctl(fd, EVIOCGRAB, 1)
         except Exception:
+            # The pass-through keyboard is built before the grab is attempted,
+            # and it is only registered in self._passthrough once the grab
+            # succeeds. A failure here would otherwise strand its /dev/uinput
+            # descriptor and leave a virtual keyboard on the system for the
+            # life of the process, once per attempt against a busy device.
+            if passthrough is not None:
+                try:
+                    passthrough.close()
+                except Exception:
+                    pass
             os.close(fd)
             raise
         self._grabbed[fd] = dict(dev)

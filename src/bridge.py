@@ -291,6 +291,9 @@ class ControllerBridge(QObject):
         self._iso_active = False
         self._iso_x = 0.0
         self._iso_y = 0.0
+        # The window _iso_x/_iso_y are measured in, so a modal dialog opening
+        # can re-anchor them instead of letting the cursor jump.
+        self._iso_target: Optional[QWindow] = None
         self._iso_game_hwnd = 0
         self._iso_nimbus_hwnd = 0
         self._iso_buttons = Qt.MouseButton.NoButton
@@ -373,6 +376,26 @@ class ControllerBridge(QObject):
     def _use_vigem(self, value):
         self._output.use_vigem = value
 
+    def _release_pulse_from(self, doomed: Any) -> None:
+        """Never let the keep-alive pulse outlive the interface it writes to.
+
+        Called before an interface is shut down. If the pulse is running
+        against that interface it is moved to the surviving one, so switching
+        output device does not silently end controller mode; if there is
+        nothing usable to move to, the pulse is stopped instead of being left
+        writing to a closed device.
+        """
+        if not (CONTROLLER_PULSE_AVAILABLE and _controller_pulse):
+            return
+        if _controller_pulse.active_interface() is not doomed:
+            return
+        survivor = self._vigem if self._use_vigem else self._vjoy
+        if survivor is not None and getattr(survivor, "is_connected", False):
+            if _controller_pulse.rebind_interface(survivor):
+                return
+        print("[bridge] Output device changed with no usable pad; stopping controller mode")
+        self._stop_pulse_only()
+
     def _retire_inactive_interface(self) -> None:
         """On Linux, destroy whichever uinput device is not the active output.
 
@@ -383,19 +406,20 @@ class ControllerBridge(QObject):
         """
         if not UINPUT_AVAILABLE:
             return
-        if self._use_vigem and self._vjoy is not None:
-            try:
-                self._vjoy.shutdown()
-            except Exception:
-                pass
+        doomed = self._vjoy if self._use_vigem else self._vigem
+        if doomed is None:
+            return
+        # Order matters: the pulse runs on its own thread and must stop
+        # touching this interface before it is shut down.
+        self._release_pulse_from(doomed)
+        try:
+            doomed.shutdown()
+        except Exception:
+            pass
+        if self._use_vigem:
             self._vjoy = None
-        elif not self._use_vigem and self._vigem is not None:
-            try:
-                self._vigem.shutdown()
-            except Exception:
-                pass
+        else:
             self._vigem = None
-    
     def _is_controller_connected(self) -> bool:
         """Check if the active controller interface is connected."""
         return self._output.connected
@@ -2747,23 +2771,60 @@ class ControllerBridge(QObject):
         elif self._iso_active:
             self._on_iso_stopped("requested")
 
+    def _iso_event_target(self) -> Optional[QWindow]:
+        """The window synthetic isolation events must be delivered to.
+
+        Axis, Joystick and Button Settings open as modal dialogs through
+        ``exec()``. A modal window takes every input event while it is up, so
+        events posted straight to the main QML window never arrive. With the
+        physical pointer grabbed, that left the user facing a dialog they
+        could not click and could not dismiss.
+        """
+        modal = QGuiApplication.modalWindow()
+        if modal is not None and modal.isVisible():
+            return modal
+        return self._window
+
+    def _iso_retarget(self) -> Optional[QWindow]:
+        """Follow the event target, carrying the cursor position across.
+
+        ``_iso_x``/``_iso_y`` are local to whichever window currently receives
+        events. Translating through global coordinates when that window
+        changes keeps the cursor where the user left it, instead of snapping
+        to a corner every time a dialog opens or closes.
+        """
+        target = self._iso_event_target()
+        previous = self._iso_target
+        if target is not previous:
+            if previous is not None and target is not None:
+                try:
+                    glob = previous.mapToGlobal(QPoint(int(self._iso_x), int(self._iso_y)))
+                    local = target.mapFromGlobal(glob)
+                    self._iso_x, self._iso_y = float(local.x()), float(local.y())
+                except Exception:
+                    self._iso_x = self._iso_y = 0.0
+            self._iso_target = target
+        return target
+
     def _iso_set_cursor(self, x: float, y: float) -> None:
-        if self._window is None:
+        target = self._iso_retarget()
+        if target is None:
             return
-        w = max(1, self._window.width())
-        h = max(1, self._window.height())
+        w = max(1, target.width())
+        h = max(1, target.height())
         self._iso_x = min(max(0.0, float(x)), w - 1.0)
         self._iso_y = min(max(0.0, float(y)), h - 1.0)
         self.isolationCursorMoved.emit(self._iso_x, self._iso_y)
 
     def _iso_send_mouse(self, ev_type, button) -> None:
-        if self._window is None:
+        target = self._iso_retarget()
+        if target is None:
             return
         local = QPointF(self._iso_x, self._iso_y)
-        global_pos = QPointF(self._window.mapToGlobal(QPoint(int(self._iso_x), int(self._iso_y))))
+        global_pos = QPointF(target.mapToGlobal(QPoint(int(self._iso_x), int(self._iso_y))))
         ev = QMouseEvent(ev_type, local, local, global_pos, button, self._iso_buttons,
                          Qt.KeyboardModifier.NoModifier)
-        QCoreApplication.sendEvent(self._window, ev)
+        QCoreApplication.sendEvent(target, ev)
 
     @Slot(int, int)
     def _on_iso_motion(self, dx: int, dy: int) -> None:
