@@ -39,6 +39,8 @@
 - [Pad Bus Fork Plan](vision/PAD_BUS_FORK_PLAN.md): forking and modernizing the archived ViGEmBus into a Nimbus-owned virtual gamepad bus driver; what the driver really does, a pure-Python client that drops the `vgamepad` dependency first, the rename and coexistence inventory, and the anti-cheat gate that decides whether we ever sign it
 - [Nimbus Mouse Filter driver README](../driver/README.md): building, test-signing, and dev-installing the kernel filter (prototype, not in any release)
 - [Driver release signing](../driver/SIGNING.md): Partner Center registration, attestation signing, and where attestation stands after the April 2026 Windows Driver Policy
+- [Linux Gaming Technical Proposal](vision/LINUX_GAMING_PROPOSAL.md): a Linux/X11 port of Nimbus, input ownership, session recovery, game presets, and phased acceptance criteria; a separate platform track, not the host this project targets
+- [Virtual Machine Feasibility](vision/VIRTUAL_MACHINE_FEASIBILITY.md): running the game in a guest on the Windows host, why the single-GPU dev machine and Hyper-V leave only GPU-PV, the controller transport that would be needed, and why the measured mouse filter beats all of it
 
 ## Distribution & Sustainability
 The business model, open-core playbook, release strategy, sponsorship outreach, voice command and Spectator+ concept documents are kept in a private repository and are not part of this one. What exists of Spectator+ in code is described here:
