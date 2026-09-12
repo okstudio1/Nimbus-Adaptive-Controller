@@ -39,7 +39,8 @@ Users build their own controller layout by dragging, dropping, and resizing widg
 
 ### Core Functionality
 - **Modular Layout Builder**: Drag-and-drop canvas to place joysticks, buttons, sliders, D-pads, and steering wheels anywhere
-- **Dual Virtual Joysticks**: Independent axis mapping with FPS-style delta tracking and tremor filtering for wheelchair joysticks
+- **Dual Virtual Joysticks**: Independent axis mapping with FPS-style delta tracking and tremor filtering for wheelchair joysticks. Per-stick travel, an output anti-deadzone that lifts the smallest movement past the game's own deadzone, a precision modifier button, and a live test pad for calibrating against a running game (see [Aim Assistance](docs/vision/AIM_ASSISTANCE.md)).
+- **What Nimbus will not do**: it reshapes input the user produces and never originates aim. No screen reading, no target detection, no synthetic stick motion the user did not command. The reasoning is in [Aim Assistance, section 10](docs/vision/AIM_ASSISTANCE.md#10-the-line-we-do-not-cross).
 - **Trigger/Slider Controls**: Horizontal and vertical sliders with 3 snap modes (hold, snap-to-zero, spring-to-center)
 - **Button Support**: Up to 128 configurable buttons with toggle/momentary modes, color and shape options
 - **Macro Joystick Mode**: Convert any joystick into a macro pad — map directions to buttons, axes, or turbo actions
@@ -111,6 +112,8 @@ Nimbus Adaptive Controller includes **built-in borderless gaming integration** �
 
 **Game compatibility**: Verified with Minecraft, Stardew Valley, Terraria, Skyrim and many others. See [`docs/GAME_COMPATIBILITY.md`](docs/GAME_COMPATIBILITY.md) for the full list.
 
+**Raw Input games** (Elden Ring, most competitive shooters) read the mouse below the layer these tools work at, so the camera still drifts while you use Nimbus. That tier needs a kernel-mode mouse filter, which is in development in [`driver/`](driver/README.md) and not yet part of any release; in development it already lets Full Game Mode take the mouse away from the game while the cursor keeps working on Nimbus and the desktop. The measurements behind that statement are in [`docs/vision/HOST_MODE_ISOLATION.md`](docs/vision/HOST_MODE_ISOLATION.md).
+
 ## Game Focus Mode (Windows)
 
 When playing games that pause or lose input when unfocused, enable **Game Focus Mode** to keep your game running while interacting with Nimbus Adaptive Controller.
@@ -144,7 +147,7 @@ Nimbus Adaptive Controller is evolving beyond a virtual controller into a broade
 Speak to control. Buttons, axes, and macros triggered by voice — using offline engines (Faster-Whisper, Vosk) for low latency and privacy, or cloud engines for higher accuracy. Goal: act on interim results for time-critical commands.
 
 ### 🤖 Spectator+ — AI-Assisted Play
-*"You direct. The AI executes."* An accessibility-first AI copilot: the user provides high-level intent (via voice, click, or switch), and a trained agent handles precise execution through the existing vJoy/ViGEm bridge. Designed for users who have the cognitive engagement to play but not the fine motor precision.
+*"You direct. The AI executes."* An accessibility-first AI copilot: the user provides high-level intent (via voice, click, or switch), and a trained agent handles precise execution through the existing vJoy/ViGEm bridge. Designed for users who have the cognitive engagement to play but not the fine motor precision. A first, model-free version exists: scripted primitives (turn by an angle, walk for a distance, press a button) in `src/spectator/`, calibrated per game by the [game test harness](docs/vision/GAME_TEST_HARNESS.md) and measured in Left 4 Dead 2 to within a few degrees. No way to trigger them from the UI yet.
 
 ### ⌨️ Keyboard Output Mode
 Any Nimbus button or slider emits native keyboard shortcuts to any application — Photoshop, DaVinci Resolve, OBS, a browser — with no external software. Enables Nimbus as a **Stream Deck replacement**, a **drawing tablet express key surface**, or a **DAW controller**.
@@ -174,17 +177,16 @@ Nimbus Adaptive Controller is and will remain **free for all accessibility use**
    - Go to [Releases](https://github.com/owenpkent/Nimbus-Adaptive-Controller/releases)
    - Download `Nimbus-Adaptive-Controller-Setup-<version>.exe` (installer) or `Nimbus-Adaptive-Controller-<version>.exe` (portable)
 
-2. **Install the ViGEmBus driver** (for Xbox/XInput emulation — recommended):
-   - Download from [ViGEmBus Releases](https://github.com/nefarius/ViGEmBus/releases)
-   - Run the installer, reboot if prompted
+2. **Run the installer**:
+   - The drivers page shows whether **vJoy** (DirectInput) and **ViGEmBus** (Xbox/XInput) are already on the machine and offers to install whichever is missing. Both are included in the installer, so no internet connection or manual download is needed, and vJoy device 1 is configured for you (8 axes, 128 buttons)
+   - Untick either driver to skip it. Nimbus still starts; the matching profile types are simply unavailable
+   - Restart if the installer asks for one
 
-3. **Install VJoy Driver** (optional — for DirectInput / legacy games):
-   - Download and install from [VJoy Official Site](http://vjoystick.sourceforge.net/)
-   - Configure VJoy device #1 with at least 6 axes (X, Y, Z, RX, RY, RZ)
+3. **Start Nimbus**:
+   - Launch it from the finish page, the Start Menu, or the desktop shortcut
+   - No Python installation required
 
-4. **Run the application**:
-   - Run the installer, or double-click the portable `.exe`
-   - No Python installation required!
+The portable `.exe` installs nothing, so it needs the drivers already present. Use the installer if you are not sure.
 
 ### Option 2: Run from Source (For Developers)
 
@@ -220,6 +222,59 @@ Nimbus Adaptive Controller is and will remain **free for all accessibility use**
    Notes:
    - The Qt Quick (QML) UI is the default and primary UI.
    - Settings persist via `controller_config.json`.
+
+### Linux (Run from Source)
+
+Nimbus is Windows-first, but the Xbox/Adaptive/Custom-layout profiles run on
+Linux today with no code changes: [vgamepad](https://github.com/yannbouteiller/vgamepad)
+ships its own Linux backend that creates a virtual Xbox 360 pad through the
+kernel's `uinput` device (via `libevdev`), the same role ViGEmBus plays on
+Windows. This has been verified end-to-end — raw device reads, SDL2/pygame,
+the browser Gamepad API, and a live Steam game running under Proton (menu
+navigation, button glyphs switching from keyboard to Xbox icons) — plus mouse
+input through the actual on-screen joystick and button widgets.
+
+1. **System dependency** — `libevdev`, used by vgamepad's Linux backend:
+   ```bash
+   sudo apt install libevdev2       # Debian/Ubuntu
+   # sudo dnf install libevdev      # Fedora
+   # sudo pacman -S libevdev        # Arch
+   ```
+2. **`/dev/uinput` must be writable.** On most desktop distros (systemd-logind
+   with the `uaccess` tag) the active graphical session already has write
+   access with no setup. If not, load the module and add a udev rule:
+   ```bash
+   sudo modprobe uinput
+   sudo usermod -aG input "$USER"   # or a dedicated "uinput" group
+   ```
+   then log out and back in.
+3. **Install and run**, same as [Option 2](#option-2-run-from-source-for-developers) above:
+   ```bash
+   git clone https://github.com/owenpkent/Nimbus-Adaptive-Controller.git
+   cd Nimbus-Adaptive-Controller
+   pip install -r requirements.txt
+   python3 run.py
+   ```
+   `requirements.txt` also lists `pyvjoy`, a Windows-only package. It installs
+   fine but can never actually load its DLL on Linux; Nimbus catches that and
+   falls back to simulation mode for vJoy, so the "PyVjoy not available"
+   message at startup is expected, not an error.
+
+**Known limitations on Linux:**
+- **Flight-sim / vJoy-preferring profiles have no output.** vJoy is a Windows
+  kernel driver with no Linux equivalent here, so those profiles stay in
+  vJoy's permanent simulation mode. Use an Xbox/Adaptive/Custom profile
+  instead — a Linux-native vJoy replacement (an 8-axis, 56-button virtual
+  joystick via raw `uinput`) is planned separately.
+- **Borderless Gaming and Game Focus Mode** are correctly disabled in the menu
+  on non-Windows platforms — both depend on Win32 APIs with no Linux
+  equivalent implemented yet.
+- **The "Game Mode" ribbon button** (Full Game Mode) is not yet hidden on
+  Linux and currently has no effect there; it depends on the same Win32-only
+  mechanisms as Borderless Gaming.
+- **Wayland is untested.** All of the above was verified under X11; see
+  [`docs/vision/LINUX_PROBE_PLAN.md`](docs/vision/LINUX_PROBE_PLAN.md) for the
+  open questions around window management on Wayland.
 
 ### Building Your Own Executable
 
@@ -400,6 +455,7 @@ Nimbus-Adaptive-Controller/
 │   ├── qt_dialogs.py                  # Qt Widgets settings dialogs
 │   ├── vjoy_interface.py              # vJoy driver interface (8 axes, 128 buttons)
 │   ├── vigem_interface.py             # ViGEm Xbox 360 controller emulation
+│   ├── padbus_client.py               # Pure-Python client for the ViGEmBus protocol
 │   ├── window_utils.py                # Game Focus Mode (Windows API)
 │   ├── borderless.py                  # Borderless gaming & cursor release
 │   └── legacy/                        # Legacy pygame UI (reference only)

@@ -2,9 +2,11 @@
 
 ## Prerequisites
 
-- **Windows 10/11** (64-bit), or **Linux** (see the [Linux Setup guide](LINUX.md); no driver install needed)
-- **vJoy driver** — must be installed separately from [vJoy on GitHub](https://github.com/njz3/vJoy) or [SourceForge](https://sourceforge.net/projects/vjoystick/)
-- Optional: **ViGEmBus driver** for Xbox 360 controller emulation (`pip install vgamepad` installs it)
+- **Windows 10/11** (64-bit), or **Linux** (see the [Linux Setup guide](LINUX.md); no driver install needed, the kernel provides uinput)
+- Nothing else. The installer includes both controller drivers and installs whichever one is missing:
+  - **vJoy 2.1.9.1** for DirectInput profiles ([source](https://github.com/jshafer817/vJoy); newer 2.2.x builds do not load on Windows 11)
+  - **ViGEmBus 1.22.0** for Xbox 360 profiles and Game Mode ([source](https://github.com/nefarius/ViGEmBus))
+- Running from source instead? Install both drivers by hand from the links above, or run the installer once (it leaves the drivers in place if Nimbus is uninstalled). The app talks to ViGEmBus directly through `src/padbus_client.py` and needs no client package.
 
 ## Installing Nimbus Adaptive Controller
 
@@ -17,8 +19,10 @@
    - Check if Nimbus Adaptive Controller is already running and offer to close it
    - Detect any previous installation (per-user or system-wide) and offer to remove it
    - Let you choose the installation directory (default: `%LOCALAPPDATA%\Programs\Project Nimbus\`)
+   - **Drivers page**: shows whether vJoy and ViGEmBus are already present, and offers to install whichever is missing. Both are included in the installer, so no internet connection is needed. Untick either one to skip it; Nimbus still starts without them, with the matching profile types unavailable
    - **Shortcut options page** — Choose whether to create Desktop and/or Start Menu shortcuts
    - Install the executable and create uninstaller
+   - Install the drivers you ticked, then check they really are present and say so if one is not
    - Register in Windows Add/Remove Programs
 5. Click "Launch Nimbus Adaptive Controller" on the final page to start
 
@@ -103,7 +107,11 @@ build_tools\sign_exe.bat dist\Nimbus-Adaptive-Controller-Setup-X.Y.Z.exe
 
 ## vJoy Setup
 
-1. Download vJoy from [GitHub releases](https://github.com/njz3/vJoy/releases)
+The Nimbus installer does all of this for you: it installs vJoy 2.1.9.1 and
+configures device 1 with 8 axes and 128 buttons. Follow the steps below only if
+you are running from source, or if you unticked vJoy during installation.
+
+1. Download vJoy 2.1.9.1 from [jshafer817's releases](https://github.com/jshafer817/vJoy/releases/tag/v2.1.9.1). Its driver is Microsoft-signed. Avoid the newer 2.2.x builds: their driver fails to load on Windows 11 (njz3/vJoy issue 17), leaving a device with 0 buttons.
 2. Run the installer (requires admin rights)
 3. Open **vJoyConf** (vJoy Configuration) and ensure:
    - Device 1 is enabled
@@ -111,8 +119,81 @@ build_tools\sign_exe.bat dist\Nimbus-Adaptive-Controller-Setup-X.Y.Z.exe
    - At least 128 buttons are enabled
 4. Launch Nimbus Adaptive Controller — it should detect vJoy automatically
 
+## Linux Installation
+
+Windows is the primary platform; there is no standalone Linux executable. From
+source, Xbox/Adaptive/Custom-layout profiles work today with no code changes,
+because [vgamepad](https://github.com/yannbouteiller/vgamepad) — the same
+package `ViGEmInterface` uses on Windows — ships its own Linux backend that
+creates a virtual Xbox 360 pad through the kernel's `uinput` device via
+`libevdev`, rather than ViGEmBus.
+
+### Prerequisites
+
+- Python 3.8+
+- `libevdev` (`sudo apt install libevdev2` on Debian/Ubuntu; `libevdev` on
+  Fedora/Arch) — the system library vgamepad's Linux backend binds against
+- A writable `/dev/uinput`
+
+### Setup
+
+```bash
+git clone https://github.com/owenpkent/Nimbus-Adaptive-Controller.git
+cd Nimbus-Adaptive-Controller
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+python3 run.py
+```
+
+`requirements.txt` also lists `pyvjoy`, a Windows-only package. It installs
+fine (pure Python wheel) but can never load its DLL on Linux; the "PyVjoy not
+available" message this prints at startup is expected and does not affect the
+Xbox/Adaptive/Custom output path.
+
+### `/dev/uinput` access
+
+On most desktop distributions, systemd-logind grants the active graphical
+session's user write access to `/dev/uinput` automatically (the `uaccess`
+udev tag) — nothing to configure. If Nimbus reports the controller as
+disconnected, check:
+
+```bash
+sudo modprobe uinput             # load the kernel module if missing
+ls -l /dev/uinput                # confirm it exists
+```
+
+If it exists but is not writable by your user, add a udev rule granting
+access (for example, tagging it `uaccess`, or granting a group your user
+belongs to) and log out and back in.
+
+### Verified working
+
+Confirmed end-to-end this cycle: raw `/dev/input/js*` reads, SDL2/pygame
+joystick enumeration, the browser Gamepad API, mouse input through the actual
+on-screen joystick and button widgets, and a live Steam game running under
+Proton (menu navigation, button-glyph switching from keyboard to Xbox icons).
+
+### Known limitations on Linux
+
+- **Flight-sim / vJoy-preferring profiles have no output.** vJoy is a Windows
+  kernel driver with no Linux equivalent yet, so those profiles stay in
+  vJoy's permanent simulation mode. Use an Xbox/Adaptive/Custom profile
+  instead.
+- **Borderless Gaming and Game Focus Mode** are correctly disabled in the menu
+  on non-Windows platforms (both check for Win32 at the API level).
+- **The "Game Mode" ribbon button** (Full Game Mode) is not yet hidden on
+  Linux and currently has no effect there — it depends on the same Win32-only
+  mechanisms as Borderless Gaming.
+- **Wayland is untested.** Verification above was under X11; see
+  [`docs/vision/LINUX_PROBE_PLAN.md`](../vision/LINUX_PROBE_PLAN.md) for the
+  open questions around window management on Wayland.
+
 ## Troubleshooting
 
 - **"Failed to initialize VJoy device 1"** — vJoy driver not installed, or another application is using device 1. Close other vJoy apps and retry.
 - **"Cannot acquire vJoy Device because it is not in VJD_STAT_FREE"** — Previous instance of Nimbus Adaptive Controller didn't shut down cleanly. Wait a few seconds and try again, or restart vJoy via Device Manager.
 - **SmartScreen warning** — The executable must be signed with an EV code certificate. Unsigned builds will trigger SmartScreen warnings.
+- **Linux: controller shows disconnected** — `/dev/uinput` is likely missing or unwritable. See [`/dev/uinput` access](#devuinput-access) above.
+- **Linux: "vgamepad not available"** — `libevdev` is missing. Install `libevdev2` (Debian/Ubuntu) or `libevdev` (Fedora/Arch).
+- **Linux: vJoy-preferring profile does nothing** — Expected; see [Known limitations](#known-limitations-on-linux) above.

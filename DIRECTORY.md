@@ -1,7 +1,7 @@
 # Nimbus Adaptive Controller — Directory Structure
 
 > **Purpose**: Quick reference for developers and AI assistants to understand the codebase layout.  
-> **Last updated**: March 2026 (v1.4.1)
+> **Last updated**: September 2026 (v1.4.3, plus the unreleased `driver/` work)
 
 ---
 
@@ -42,6 +42,8 @@ Python backend — Qt/QML bridge, configuration, hardware interfaces.
 | `borderless.py` | Borderless window mode + ClipCursor release (Windows) |
 | `mouse_hider.py` | Controller Mode Enforcement — keep-alive pulse + mouse hook (Windows) |
 | `window_utils.py` | Game Focus Mode — save/restore foreground window (Windows) |
+| `mouse_isolation_win.py` | Mouse isolation client for the Nimbus Mouse Filter kernel driver (Windows); same class API as the Linux `mouse_isolation.py` on the `linux-uinput-support` branch. Drives Full Game Mode's mouse isolation with the cursor relay: the real cursor keeps working, the game sees no mouse |
+| `spectator/` | Spectator+ v0: `calibration.py` (a game's measured stick response and the plans built from it), `primitives.py` (`PrimitiveRunner`: turn, walk and press as timed axis sequences on a `QTimer`, reached through `ControllerBridge.get_spectator()`), `calibrations/<game>.json` written by the game test harness |
 | `telemetry.py` | Opt-in anonymous analytics + crash reporting (local buffer, batch flush) |
 | `cloud_client.py` | User accounts (Email/Google/Facebook OAuth), token management, profile sync |
 | `updater.py` | Lightweight auto-update checker with version manifest and update channels |
@@ -137,7 +139,8 @@ Everything needed to package and distribute the app.
 |------|---------|
 | `Project-Nimbus.spec` | PyInstaller spec — defines bundling, paths, hidden imports |
 | `launcher.py` | Entry point for frozen executable |
-| `installer.nsi` | NSIS installer script — wizard, shortcuts, version detection |
+| `installer.nsi` | NSIS installer script: wizard, shortcuts, version detection, bundled vJoy and ViGEmBus install |
+| `fetch_redist.ps1` | Downloads the vJoy and ViGEmBus setups the installer bundles, pinned by SHA-256 and publisher signature, into the gitignored `redist/`. Run before `makensis` |
 | `sign_exe.bat` | Code signing script (EV certificate) |
 | `Project-Nimbus.ico` | Application icon (multi-resolution) |
 | `Project-Nimbus.manifest` | Windows manifest (UIAccess, DPI awareness) |
@@ -149,6 +152,9 @@ Everything needed to package and distribute the app.
 # Build executable
 venv\Scripts\pyinstaller.exe build_tools\Project-Nimbus.spec --noconfirm
 
+# Fetch the bundled driver setups (required before makensis)
+powershell -ExecutionPolicy Bypass -File build_tools\fetch_redist.ps1
+
 # Build installer
 & "C:\Program Files (x86)\NSIS\makensis.exe" build_tools\installer.nsi
 
@@ -158,12 +164,37 @@ cmd /c build_tools\sign_exe.bat
 
 ---
 
+## Kernel Driver: `driver/`
+
+The Nimbus Mouse Filter, a KMDF upper filter on the mouse class that hands the physical mouse to Nimbus for Raw Input games. Windows only, built separately from the app (needs Visual Studio 2022 with the WDK). Not part of `run.py` and not in any release yet.
+
+| File | Purpose |
+|------|---------|
+| `README.md` | Build, test-signing, and dev-install instructions |
+| `SIGNING.md` | Release path: Partner Center registration, attestation signing, and where that stands after the April 2026 driver policy |
+| `nimbus_moufilter/nimbus_moufilter.c` | The driver: filter callback, control device, isolation IOCTLs, watchdog |
+| `nimbus_moufilter/nimbus_moufilter_ioctl.h` | User/kernel contract, mirrored by `src/mouse_isolation_win.py` |
+| `nimbus_moufilter/nimbus_moufilter.inx` | INF template (service install; class filter entry is added by the install script) |
+| `build.ps1` | Build and collect outputs into `driver/out/` (gitignored) |
+| `package.ps1` | Build and EV-sign the attestation submission CAB; `-VerifySigned` checks the package Microsoft returns |
+| `enable-testsigning.ps1`, `install-dev.ps1`, `uninstall-dev.ps1` | Elevated dev loop; the installer verifies the load and rolls back automatically |
+| `pnp-common.ps1` | Shared helper: restarts every mouse with `pnputil /restart-device` so the filter attaches or detaches without a reboot |
+
+---
+
 ## Documentation: `docs/`
 
 ```
 docs/
 ├── README.md                    # Docs index
 ├── GAME_COMPATIBILITY.md        # Borderless gaming game compatibility list
+├── vision/                      # Research and plans
+│   ├── HOST_MODE_ISOLATION.md   # Raw Input tier: options, Windows measurements, prior art
+│   ├── WINDOWS_MOUSE_FILTER_PLAN.md  # The kernel filter design and status
+│   ├── PAD_BUS_FORK_PLAN.md     # Forking and modernizing ViGEmBus; the client first, the driver on a gate
+│   ├── LINUX_PROBE_PLAN.md      # The Linux EVIOCGRAB experiment
+│   ├── LINUX_GAMING_PROPOSAL.md # A Linux/X11 port of Nimbus; a separate platform track
+│   └── VIRTUAL_MACHINE_FEASIBILITY.md  # A guest VM on the Windows host; why it loses to the filter
 ├── setup/                       # Installation & configuration
 │   ├── INSTALLATION.md          # Install guide, vJoy setup
 │   ├── PROFILES.md              # Profile system, save locations
@@ -191,7 +222,7 @@ docs/
 
 | Directory | Purpose |
 |-----------|---------|
-| `tests/` | Driver diagnostics: `test_vjoy.py` (Windows), `test_uinput.py` (Linux round-trip), `probe_evdev_grab.py` (Linux EVIOCGRAB probe), `probe_game_mouselook.py` (in-game isolation check) |
+| `tests/` | vJoy diagnostics plus Windows input probes: `probe_rawinput_windows.py` (which countermeasures stop `WM_INPUT`), `probe_game_mouselook_windows.py` (in-game camera motion), `probe_mouse_filter_windows.py` (the kernel filter), `probe_mouse_filter_stress_windows.py` (the filter's battle test: storms, floods, process chaos, CPU starvation, an API fuzz, a soak), `probe_nimbus_relay_windows.py` (the real app in Full Game Mode with the cursor relay), `probe_installer_drivers_windows.ps1` (the installer's vJoy and ViGEmBus bootstrap, unattended after one elevation), `test_stick_shaping.py` (property checks on the stick shaping formula, no hardware), `probe_stick_shaping_windows.py` (the real app driven by synthesized pointer events, reading what reached ViGEm), `probe_game_deadzone_windows.py` (a running game's real stick deadzone, and whether a 1 px Nimbus drag clears it), `game_harness.py` and `probe_game_harness_windows.py` (the game test harness: launches a game from a recipe in `games/`, owns the pad, reads ground truth from a Source console or frame differencing, calibrates the game, runs the real app end to end, and measures the Spectator+ primitives; recipes for `left4dead2`, `halflife2`, `eldenring` and `powerwashsimulator`; `docs/vision/GAME_TEST_HARNESS.md`). Linux: `test_uinput.py` (round-trips every axis and button through the kernel), `probe_evdev_grab.py` (the EVIOCGRAB mechanism), `probe_game_mouselook.py` (in-game isolation check), and `test_linux_input_safety.py` (the pulse-versus-release race and the absolute-pointer refusal, no hardware) |
 | `research/` | Research notes, reference materials |
 | `build/` | PyInstaller build cache (gitignored) |
 | `dist/` | Built executables and installers (gitignored) |

@@ -4,6 +4,16 @@
 > **Priority**: High — Zero driver development, works with existing vJoy  
 > **Estimated Effort**: Medium (Python + QML changes, installer updates)
 
+> **Note, 2026-09-09.** The capacity arithmetic here is right (the axes come
+> from having 16 devices, not from a wider one), but it rests on vJoy, which is
+> a frozen third-party driver whose only usable build is from 2019; see
+> `docs/setup/PACKAGING.md`. Phase 4 of
+> [docs/vision/PAD_BUS_FORK_PLAN.md](../vision/PAD_BUS_FORK_PLAN.md) would
+> enumerate the same kind of device from a driver we own and control, which is
+> the same capacity without the dependency. That plan's section 10 also records
+> why a single wider device does not help: 8 axes, 4 hats and 128 buttons is
+> `DIJOYSTATE2`'s shape, so it is DirectInput's ceiling and not vJoy's.
+
 ---
 
 ## Overview

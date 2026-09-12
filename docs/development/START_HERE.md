@@ -29,9 +29,14 @@ Project-Nimbus/
 │   ├── axis_config_dialog.py # Axis configuration
 │   └── joystick_settings_dialog.py # Settings dialog
 └── 📂 tests/          # Test files
-    ├── simple_vjoy_test.py
-    ├── test_vjoy.py
-    └── test_dialog.py
+    ├── run_fast_tests.py        # the fast, hardware-free suite (what CI runs)
+    ├── test_*.py                # fast tests, run as modules: python -m tests.test_bridge_services
+    ├── frame_motion.py          # frame motion measurement for the game harness
+    ├── game_harness.py          # real-game harness (docs/vision/GAME_TEST_HARNESS.md)
+    ├── games/                   # one recipe per game
+    ├── probe_*_windows.py       # hardware probes a person runs
+    ├── simple_vjoy_test.py      # vJoy driver diagnostics
+    └── test_vjoy.py
 ```
 
 ## 🎮 Features

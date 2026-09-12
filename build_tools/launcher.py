@@ -34,9 +34,9 @@ def main():
             
             error_msg = f"Failed to start Nimbus Adaptive Controller:\n\n{str(e)}\n\n"
             error_msg += "Common issues:\n"
-            error_msg += "1. ViGEmBus driver not installed (install from ViGEmBus GitHub releases)\n"
+            error_msg += "1. ViGEmBus driver not installed. Run the Nimbus installer again and tick ViGEmBus on the drivers page.\n"
             error_msg += "2. ViGEmClient.dll missing — reinstall Nimbus Adaptive Controller\n"
-            error_msg += "3. VJoy driver not installed (optional — only needed for vJoy profiles)\n"
+            error_msg += "3. vJoy driver not installed (only needed for vJoy profiles; the installer offers it too)\n"
             error_msg += "4. Windows Defender blocking the virtual controller driver"
             
             QMessageBox.critical(None, "Nimbus Adaptive Controller Error", error_msg)

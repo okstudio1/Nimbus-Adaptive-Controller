@@ -32,7 +32,8 @@
                 "mapping": {
                     "axis_x": "rx",
                     "axis_y": "ry"
-                }
+                },
+                "travel_px": 160
             },
             {
                 "id": "lt_trigger",

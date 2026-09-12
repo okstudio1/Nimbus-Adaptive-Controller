@@ -1,0 +1,40 @@
+name: Fast tests
+
+# The fast, hardware-free suite (tests/run_fast_tests.py). The game harness,
+# the driver probes and the vJoy diagnostics stay out of CI for good: they
+# need Steam, a signed-in account, a GPU and a virtual pad driver, and a
+# person runs them (docs/vision/TESTING_STRATEGY.md, section 4.1).
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  fast-tests:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # PyInstaller is only for packaging, so the runner skips it. Nothing else
+      # in requirements.txt touches a driver at install time: the virtual pad
+      # client is pure Python (src/padbus_client.py) and the app degrades
+      # gracefully when no bus driver is present.
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          Get-Content requirements.txt | Where-Object { $_ -notmatch '^pyinstaller' } | Set-Content ci-requirements.txt
+          Get-Content ci-requirements.txt
+          pip install -r ci-requirements.txt
+
+      - name: Run the fast suite
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python tests/run_fast_tests.py

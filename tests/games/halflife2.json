@@ -1,0 +1,83 @@
+{
+    "name": "halflife2",
+    "title": "Half-Life 2",
+    "process": "hl2.exe",
+    "steam_exe": "C:\\Program Files (x86)\\Steam\\steam.exe",
+    "steam_app_id": 220,
+    "game_dir": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Half-Life 2",
+    "launch_args": [
+        "-novid",
+        "-windowed",
+        "-noborder",
+        "-w",
+        "1280",
+        "-h",
+        "720",
+        "-condebug",
+        "+sv_cheats",
+        "1",
+        "+map",
+        "d1_eli_01",
+        "+exec",
+        "nimbus_harness"
+    ],
+    "window_timeout_s": 300,
+    "ready_timeout_s": 240,
+    "turn_right_sign": -1,
+    "pad_buttons_reach_game": false,
+    "floor_moves_camera": false,
+    "oracle": {
+        "type": "source_console",
+        "mod_dir": "hl2",
+        "cfg_name": "nimbus_harness",
+        "base_cfg": "360controller",
+        "pose_command": "getpos",
+        "pose_key": "F7",
+        "reset_key": "F8",
+        "button_echo": {
+            "JOY5": "NIMBUS_BUTTON_LB"
+        }
+    },
+    "reset_pose": {
+        "pos": [
+            149.28,
+            4453.52,
+            -1342.167
+        ],
+        "ang": [
+            0.0,
+            135.0,
+            0.0
+        ]
+    },
+    "notes": "The second Source recipe, and the one that shows which parts of the Left 4 Dead 2 recipe were Left 4 Dead 2 rather than Source. Measured on the 20th-anniversary build, 2026-09-07. (1) No getpos_exact in this engine: only getpos is in hl2/bin/client.dll, so pose_command is getpos and the harness pairs it with setpos. getpos prints the eye position and setpos sets the origin, so a reset teleports the player up and drops it; it settles, and G2 lands within 0.87 units. (2) getpos writes its two halves as separate console writes and prints a 'Map name: <map>' line of its own between them, which lands mid-line about one read in ten, so POSE_RE had to allow text between setpos and setang. Every read also echoes a marker first, so a read cannot take the previous read's answer. (3) exec does not run inline here: the harness's loaded marker printed nine lines before the joystick output that 'exec 360controller' triggers, so binds written after the exec were overwritten by the game's own controller cfg. The harness now puts its binds in their own file exec'd after the base cfg. (4) The install has two game dirs. The game writes config.cfg into hl2_complete/cfg but -condebug writes hl2/console.log, and +exec finds a cfg in hl2/cfg and not one in hl2_complete/cfg (checked by putting a marker cfg in each). mod_dir is hl2, correct for both the log and the cfg. (5) This game never acts on the pad's buttons, only its axes, which is why pad_buttons_reach_game is false. key_listboundkeys shows all ten binds in place ('JOY5' = 'echo NIMBUS_BUTTON_LB'), the named constants that Left 4 Dead 2 uses are rejected here as invalid keys, and pressing all fourteen pad buttons produces nothing in the log while the stick turns the view between one ignored press and the next. Worth knowing beyond the test: a Nimbus user driving this game gets the sticks and no buttons. (6) The camera outruns the oracle above about 0.60. Below it the readings hold together across runs (0.40 gave -47.24, -47.26 and -50.68 deg/s; 0.60 gave -178.87, -178.99 and -177.82); at 0.80 and 1.00 the number folds past 180 degrees between pose samples, and the same check has read -99.97, -327.78, -167.01 and +41.52 for the same stick, so the sign itself is not trustworthy there. Each pose read costs about 50 ms, and no hold this harness can set keeps a full-deflection turn under 180 degrees between samples. Trust this recipe at 0.40 and 0.60; a real number at the stop needs a streaming oracle (cl_showpos and a reader), not this one. 360controller.cfg here has no unbindall, sets joy_yawsensitivity -1.25 rather than -1.5 and joy_accelscale 1.4 with no joy_accelmax. The deadzone sits between 0.30 and 0.40, well above Left 4 Dead 2's 0.26 to 0.28. The walk is about 220 units in a second (216.6, 219.4 twice, and 239.3 across runs). The recipe as it stands runs 12/13, the one failure being the calibration table, which cannot be built while the full-deflection row folds. The map is d1_eli_01, Black Mesa East, chosen for having no hostiles, so the player cannot be killed or knocked out of the reset pose mid-run. The window title is 'HALF-LIFE 2 - Direct3D 9', matched case-insensitively. The reset pose came from --survey-walk: yaw 135 gives the longest clear run at 253 units, against 118 at yaw 315.",
+    "expect": {
+        "G5": {
+            "0.40": {
+                "deg_per_s": -48.22,
+                "tol_pct": 15.0,
+                "tol_abs": 1.0
+            },
+            "0.60": {
+                "deg_per_s": -178.901,
+                "tol_pct": 15.0,
+                "tol_abs": 1.0
+            }
+        },
+        "G7": {
+            "deg_per_s": -89.0,
+            "tol_pct": 15.0,
+            "tol_abs": 1.0
+        },
+        "G8": {
+            "units_per_s": 216.588,
+            "tol_pct": 20.0,
+            "tol_abs": 10.0
+        },
+        "N5": {
+            "units_per_s": 215.714,
+            "tol_pct": 20.0,
+            "tol_abs": 10.0
+        }
+    }
+}

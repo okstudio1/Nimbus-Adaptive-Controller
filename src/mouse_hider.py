@@ -18,7 +18,7 @@ we can exploit this by:
 This approach makes the game VOLUNTARILY stop capturing the mouse, rather than
 fighting ClipCursor in a race condition.
 
-Pure ctypes implementation — no extra dependencies beyond vgamepad (already required).
+Pure ctypes implementation, no extra dependencies; the pad object comes from src/padbus_client.py.
 
 See: research/in-progress/controller-mode-enforcement.md
 """
@@ -268,14 +268,14 @@ def _send_controller_burst(gamepad: Any, count: int = 10,
 
         # Phase 2: Button press — unambiguous "controller is being used"
         try:
-            import vgamepad as vg
-            gamepad.press_button(button=vg.XUSB_BUTTON.XUSB_GAMEPAD_A)
+            from .padbus_client import XUSB_BUTTON
+            gamepad.press_button(button=XUSB_BUTTON.XUSB_GAMEPAD_A)
             gamepad.update()
             time.sleep(0.05)
-            gamepad.release_button(button=vg.XUSB_BUTTON.XUSB_GAMEPAD_A)
+            gamepad.release_button(button=XUSB_BUTTON.XUSB_GAMEPAD_A)
             gamepad.update()
         except Exception:
-            pass  # vgamepad API may differ; stick burst alone may suffice
+            pass  # no button constants available; the stick burst alone may suffice
 
         # Return to center
         gamepad.left_joystick_float(0.0, 0.0)

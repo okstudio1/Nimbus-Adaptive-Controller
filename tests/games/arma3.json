@@ -1,0 +1,102 @@
+{
+    "name": "arma3",
+    "title": "Arma 3",
+    "process": "arma3_x64.exe",
+    "steam_exe": "C:\\Program Files (x86)\\Steam\\steam.exe",
+    "steam_app_id": 107410,
+    "game_dir": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Arma 3",
+    "exe": "arma3battleye.exe",
+    "launch_args": [
+        "2",
+        "1",
+        "1",
+        "-exe",
+        "arma3_x64.exe",
+        "-noSplash",
+        "-skipIntro",
+        "-noPause",
+        "-noPauseAudio",
+        "-showScriptErrors",
+        "-window",
+        "-world=empty",
+        "-init=playMission['','nimbus_harness.VR',true]"
+    ],
+    "window_timeout_s": 300,
+    "ready_timeout_s": 300,
+    "turn_right_sign": 1,
+    "walk_min_units": 2.5,
+    "floor_moves_camera": false,
+    "pitch_rate_deg_per_s": 25,
+    "oracle": {
+        "type": "arma3",
+        "mission": "nimbus_harness.VR",
+        "spawn": [
+            4096,
+            4096
+        ],
+        "button_echo": {
+            "1": "Action"
+        }
+    },
+    "window": {
+        "w": 1280,
+        "h": 720,
+        "x": 0,
+        "y": 0,
+        "borderless": true
+    },
+    "window_min_client": [
+        800,
+        600
+    ],
+    "window_stages": [
+        "ready"
+    ],
+    "reset_pose": {
+        "pos": [
+            4096.0,
+            4096.0,
+            5.001
+        ],
+        "ang": [
+            0.0,
+            0.0,
+            0.0
+        ]
+    },
+    "notes": "The BattlEye title of PAD_BUS_FORK_PLAN.md section 13. Launched by arma3battleye.exe (exe key) rather than through Steam, which would open the Arma 3 Launcher and wait for a click; the BattlEye launcher shows a privacy notice the first time and then starts the game with -beservice, and the BEService service runs while it does. Measured with BattlEye on: pad 13/13, Nimbus 17/17 with the five Spectator+ primitives; every number matches the no-BattlEye control (arma3_nobe.json) to the decimal, so in single player BattlEye neither blocks the virtual pad nor changes what it does. That is the baseline a fork of the bus driver has to match, and it says nothing about a server join, where BattlEye kicks. The oracle is a generated one-soldier mission on the VR world (flat, gridded) whose init.sqf publishes the player's pose through the clipboard about thirty times a second and to the report file a third of a second behind, and reads NIMBUS_RESET and NIMBUS_EXEC commands back from the clipboard (game_harness.py, Arma3Oracle; GAME_TEST_HARNESS.md section 4.3). Yaw and pitch come from getCameraViewDirection: a compass heading, clockwise, so stick right is a positive delta (turn_right_sign 1), pitch up positive; eyeDirection does not follow the aim's pitch. Nothing in SQF sets that pitch, so the reset restores position and yaw (setPosASL, setDir, 0.33 s) and the harness levels the pitch with the right stick at 0.6 (pitch_rate_deg_per_s, about 25 measured). Arma disables a new XInput pad in the player's profile; the oracle sets the engine's Xbox scheme (SchemeMovementLeftBrakeTriggerAccTrigger) behind a .nimbus-harness.bak copy, which only works from the second launch with the pad present. The game keeps a 506x250 start-up window alive beside the real one (window_min_client) and hung when resized while loading (window_stages: ready only; 1280x720 borderless takes at readiness). Walking is about 5 m/s (walk_min_units 2.5), the right-stick deadzone is between 0.30 and 0.40, above the bridge's 0.289 floor (floor_moves_camera false), a full stick turns about 305 deg/s and 0.6 about 36.7. Button A reads as the Action user action (button_echo); Start opens the pause menu, which freezes the mission's script, so nothing presses it. A copy or paste during a run interrupts the pose channel for one read. Measured 2026-09-09 on the pure-Python pad client.",
+    "expect": {
+        "G5": {
+            "0.40": {
+                "deg_per_s": 4.239,
+                "tol_pct": 15.0,
+                "tol_abs": 1.0
+            },
+            "0.60": {
+                "deg_per_s": 36.018,
+                "tol_pct": 15.0,
+                "tol_abs": 1.0
+            }
+        },
+        "G7": {
+            "deg_per_s": 25.778,
+            "tol_pct": 15.0,
+            "tol_abs": 1.0
+        },
+        "G8": {
+            "units_per_s": 4.98,
+            "tol_pct": 20.0,
+            "tol_abs": 10.0
+        },
+        "N2": {
+            "deg_per_s": 0.283,
+            "tol_pct": 15.0,
+            "tol_abs": 1.0
+        },
+        "N5": {
+            "units_per_s": 3.7,
+            "tol_pct": 20.0,
+            "tol_abs": 10.0
+        }
+    }
+}

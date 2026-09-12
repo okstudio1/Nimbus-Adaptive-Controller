@@ -26,13 +26,17 @@ try:
         VJOY_AVAILABLE = False
         VJOY_API_VERSION = "none"
         print("Warning: PyVjoy version incompatible. Missing VJoyDevice class.")
-except Exception as e:
-    # ImportError when the package is missing; OSError when pyvjoy is installed
-    # but its Windows DLL cannot be loaded (e.g. on Linux).
+except (Exception, SystemExit) as e:
+    # pyvjoy calls sys.exit() rather than raising ImportError when it cannot
+    # load vJoyInterface.dll, which is every non-Windows platform. SystemExit
+    # derives from BaseException, so neither `except ImportError` nor a plain
+    # `except Exception` catches it and the process dies at import time.
     VJOY_AVAILABLE = False
     VJOY_API_VERSION = "none"
     if sys.platform == "win32":
-        print(f"Warning: PyVjoy not available: {e}")
+        # On Linux the bridge uses uinput and vJoy is never expected, so the
+        # warning would be noise at every start.
+        print(f"Warning: PyVjoy not available: {e!r}")
 
 
 class VJoyInterface:

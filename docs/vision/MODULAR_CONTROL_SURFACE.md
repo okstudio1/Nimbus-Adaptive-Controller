@@ -237,5 +237,5 @@ The control surface framing opens new partnership conversations:
 - [AAC Integration](AAC_INTEGRATION.md) — the communication application of this platform
 - [Research Platform](RESEARCH_PLATFORM.md) — data collection across all use cases
 - [Voice Command Integration](../distribution/VOICE_COMMAND.md) — voice as a cross-application input method
-- [Spectator+ Concept](../distribution/SPECTATOR_PLUS.md) — AI assistance extends to non-gaming use cases
+- [Spectator+ v0 (Game Test Harness, section 4.7)](GAME_TEST_HARNESS.md): scripted primitives through the bridge; the same runner could execute non-gaming sequences
 - [Business Model](../distribution/BUSINESS_MODEL.md) — how the expanded use case affects revenue

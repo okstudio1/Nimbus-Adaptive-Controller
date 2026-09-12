@@ -186,7 +186,7 @@ See [`RELEASE_STRATEGY.md`](../distribution/RELEASE_STRATEGY.md) for the full gr
 
 ## Related Documents
 
-- [Spectator+ Concept](../distribution/SPECTATOR_PLUS.md) — AI features generate additional behavioral data
+- [Spectator+ v0 (Game Test Harness, section 4.7)](GAME_TEST_HARNESS.md): scripted primitives through the bridge; assisted play would generate additional behavioural data
 - [Voice Command Integration](../distribution/VOICE_COMMAND.md) — voice usage patterns are a research signal
 - [Release Strategy](../distribution/RELEASE_STRATEGY.md) — grant funding landscape
 - [AAC Integration](AAC_INTEGRATION.md) — research platform extends to AAC use cases
