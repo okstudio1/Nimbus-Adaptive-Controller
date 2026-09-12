@@ -213,6 +213,59 @@ The portable `.exe` installs nothing, so it needs the drivers already present. U
    - The Qt Quick (QML) UI is the default and primary UI.
    - Settings persist via `controller_config.json`.
 
+### Linux (Run from Source)
+
+Nimbus is Windows-first, but the Xbox/Adaptive/Custom-layout profiles run on
+Linux today with no code changes: [vgamepad](https://github.com/yannbouteiller/vgamepad)
+ships its own Linux backend that creates a virtual Xbox 360 pad through the
+kernel's `uinput` device (via `libevdev`), the same role ViGEmBus plays on
+Windows. This has been verified end-to-end — raw device reads, SDL2/pygame,
+the browser Gamepad API, and a live Steam game running under Proton (menu
+navigation, button glyphs switching from keyboard to Xbox icons) — plus mouse
+input through the actual on-screen joystick and button widgets.
+
+1. **System dependency** — `libevdev`, used by vgamepad's Linux backend:
+   ```bash
+   sudo apt install libevdev2       # Debian/Ubuntu
+   # sudo dnf install libevdev      # Fedora
+   # sudo pacman -S libevdev        # Arch
+   ```
+2. **`/dev/uinput` must be writable.** On most desktop distros (systemd-logind
+   with the `uaccess` tag) the active graphical session already has write
+   access with no setup. If not, load the module and add a udev rule:
+   ```bash
+   sudo modprobe uinput
+   sudo usermod -aG input "$USER"   # or a dedicated "uinput" group
+   ```
+   then log out and back in.
+3. **Install and run**, same as [Option 2](#option-2-run-from-source-for-developers) above:
+   ```bash
+   git clone https://github.com/owenpkent/Nimbus-Adaptive-Controller.git
+   cd Nimbus-Adaptive-Controller
+   pip install -r requirements.txt
+   python3 run.py
+   ```
+   `requirements.txt` also lists `pyvjoy`, a Windows-only package. It installs
+   fine but can never actually load its DLL on Linux; Nimbus catches that and
+   falls back to simulation mode for vJoy, so the "PyVjoy not available"
+   message at startup is expected, not an error.
+
+**Known limitations on Linux:**
+- **Flight-sim / vJoy-preferring profiles have no output.** vJoy is a Windows
+  kernel driver with no Linux equivalent here, so those profiles stay in
+  vJoy's permanent simulation mode. Use an Xbox/Adaptive/Custom profile
+  instead — a Linux-native vJoy replacement (an 8-axis, 56-button virtual
+  joystick via raw `uinput`) is planned separately.
+- **Borderless Gaming and Game Focus Mode** are correctly disabled in the menu
+  on non-Windows platforms — both depend on Win32 APIs with no Linux
+  equivalent implemented yet.
+- **The "Game Mode" ribbon button** (Full Game Mode) is not yet hidden on
+  Linux and currently has no effect there; it depends on the same Win32-only
+  mechanisms as Borderless Gaming.
+- **Wayland is untested.** All of the above was verified under X11; see
+  [`docs/vision/LINUX_PROBE_PLAN.md`](docs/vision/LINUX_PROBE_PLAN.md) for the
+  open questions around window management on Wayland.
+
 ### Building Your Own Executable
 
 See [`build_tools/BUILD_EXECUTABLE.md`](build_tools/BUILD_EXECUTABLE.md) for detailed instructions on creating a standalone Windows executable using PyInstaller.

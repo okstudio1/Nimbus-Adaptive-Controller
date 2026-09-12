@@ -100,6 +100,11 @@ All four must hold:
 - [ ] **P1.** Moving the physical mouse moves the in-game camera via the right stick.
 - [ ] **P2.** The game's own mouse-look does **not** respond. No double input, no drift. *This is the entire test.* On Windows this is the step that fails.
 - [ ] **P3.** Elden Ring shows Xbox button glyphs, confirming the uinput device is detected as a standard pad.
+      Independently reconfirmed 2026-09 using Nimbus's own production `ViGEmInterface` (not the throwaway probe
+      script above) against Brawlhalla under Proton Experimental: the game's UI switched from keyboard prompts
+      to Xbox glyphs the moment input arrived, and menu navigation responded correctly. P1/P2/P4 — the exclusive
+      mouse grab and EAC's specific reaction — were not part of that verification. See
+      [`docs/setup/INSTALLATION.md`](../setup/INSTALLATION.md#linux-installation).
 - [ ] **P4.** EAC does not complain, refuse to launch, or flag the session.
 
 ### Failure modes and what they mean
