@@ -308,7 +308,9 @@ class _UInputBase:
         self.last_command_time = time.time()
         self.failsafe_active = False
         self.button_states: Dict[int, bool] = {}
-        self._lock = threading.Lock()
+        # Re-entrant: the transient-pulse helpers hold this across _emit,
+        # which takes it again for the device write.
+        self._lock = threading.RLock()
         self._warned_buttons: set = set()
         self._initialize()
 
@@ -492,11 +494,70 @@ class UInputXboxInterface(_UInputBase):
     def set_left_stick(self, x: float, y: float) -> bool:
         """Set the left stick (``-1..1`` each, ``+y`` is up)."""
         x, y = _clamp(x, -1, 1), _clamp(y, -1, 1)
-        if self._emit([(EV_ABS, ABS_X, self._stick_raw(x)),
-                       (EV_ABS, ABS_Y, self._stick_raw(y, invert=True))]):
-            self.current_values["left_x"], self.current_values["left_y"] = x, y
-            return True
+        with self._lock:
+            if self._emit([(EV_ABS, ABS_X, self._stick_raw(x)),
+                           (EV_ABS, ABS_Y, self._stick_raw(y, invert=True))]):
+                self.current_values["left_x"], self.current_values["left_y"] = x, y
+                return True
         return False
+
+    # ---- transient output, for the keep-alive pulse ----------------------
+    #
+    # The pulse must never become the author of the stick position. Everything
+    # below emits without touching ``current_values``, so "restore" always
+    # means "re-emit whatever the user currently commands" rather than
+    # "re-emit what the pulse happened to read a moment ago". That is what
+    # stops a pulse from undoing a release: if the user centres the stick
+    # while a pulse is in flight, the restore re-emits the centre, not the
+    # stale deflection.
+
+    def emit_left_stick_transient(self, x: float, y: float) -> bool:
+        """Emit a left-stick position without recording it as commanded.
+
+        Parameters
+        ----------
+        x, y : float
+            Stick position in ``-1..1``, ``+y`` up.
+
+        Returns
+        -------
+        bool
+            True if the device accepted the write.
+        """
+        x, y = _clamp(x, -1, 1), _clamp(y, -1, 1)
+        with self._lock:
+            return self._emit([(EV_ABS, ABS_X, self._stick_raw(x)),
+                               (EV_ABS, ABS_Y, self._stick_raw(y, invert=True))])
+
+    def restore_left_stick(self) -> bool:
+        """Re-emit the commanded left stick, discarding any transient offset."""
+        with self._lock:
+            return self.emit_left_stick_transient(
+                self.current_values["left_x"], self.current_values["left_y"])
+
+    def pulse_left_stick(self, dx: float, dy: float) -> bool:
+        """Emit one keep-alive deflection around the commanded position.
+
+        The read, the offset write and the restore happen under one lock, so a
+        concurrent :meth:`set_left_stick` either lands entirely before this
+        (and is the value restored) or entirely after (and overwrites the
+        restore). Neither ordering can leave the stick deflected.
+
+        Parameters
+        ----------
+        dx, dy : float
+            Offset applied to the commanded position for a single frame.
+
+        Returns
+        -------
+        bool
+            True if both writes were accepted.
+        """
+        with self._lock:
+            x = self.current_values["left_x"]
+            y = self.current_values["left_y"]
+            ok = self.emit_left_stick_transient(x + dx, y + dy)
+            return self.emit_left_stick_transient(x, y) and ok
 
     def set_right_stick(self, x: float, y: float) -> bool:
         """Set the right stick (``-1..1`` each, ``+y`` is up)."""
