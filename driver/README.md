@@ -67,8 +67,12 @@ does not buy, is in [SIGNING.md](SIGNING.md).
 | `build.ps1` | Build and collect outputs into `out/`. |
 | `package.ps1` | Build the CAB for Partner Center attestation signing, and verify the package that comes back. See [SIGNING.md](SIGNING.md). |
 | `enable-testsigning.ps1` | Install the test cert and turn on test signing (elevated, one reboot). |
-| `install-dev.ps1` / `uninstall-dev.ps1` | Register/unregister the class filter for development (elevated). `install-dev.ps1` also updates a loaded build: it detaches the filter, replaces the file, and re-attaches. |
-| `pnp-common.ps1` | Shared by the two scripts above: `Restart-Mice`, which restarts every mouse with `pnputil /restart-device` so the filter attaches or detaches without a reboot. |
+| `disable-testsigning.ps1` | Turn test signing back off **safely**: detaches the filter first, then changes the setting. Use this instead of bare `bcdedit`, see [If the machine stops being able to load the driver](#if-the-machine-stops-being-able-to-load-the-driver). |
+| `install-dev.ps1` / `uninstall-dev.ps1` | Register/unregister the class filter for development (elevated). `install-dev.ps1` also updates a loaded build: it detaches the filter, replaces the file, and re-attaches, and it registers the boot guard below. |
+| `check-mouse-filter.ps1` | Read-only health check, no elevation: would the mouse survive the next reboot? Run it before rebooting, before turning test signing off, and after Windows updates. |
+| `recover-mouse.ps1` | Emergency (elevated): detach the filter and restart the mice, so the mouse comes back without a reboot. Leaves the service and `.sys` in place. Self-contained on purpose. |
+| `nimbus-mouse-guard.ps1` | The self-heal. `install-dev.ps1` copies it to `%ProgramData%\ProjectNimbus\driver` and registers it as the `NimbusMouseFilterGuard` scheduled task (SYSTEM, at startup and daily). It detaches the filter if it is registered but can no longer load. |
+| `pnp-common.ps1` | Shared by the scripts above: `Restart-Mice`, which restarts every mouse with `pnputil /restart-device` so the filter attaches or detaches without a reboot. |
 
 ## Build
 
@@ -105,6 +109,7 @@ policy are all in [SIGNING.md](SIGNING.md). None of it has been done yet.
 Set-ExecutionPolicy -Scope Process Bypass -Force
 & "C:\path\to\Nimbus-Adaptive-Controller\driver\enable-testsigning.ps1"   # once; then reboot
 & "C:\path\to\Nimbus-Adaptive-Controller\driver\install-dev.ps1"          # copies the .sys, creates the service, adds the class UpperFilters, restarts the mice
+& "C:\path\to\Nimbus-Adaptive-Controller\driver\check-mouse-filter.ps1"   # any time, no elevation: would the mouse survive the next reboot?
 ```
 
 Use the full path: an elevated PowerShell starts in `C:\WINDOWS\system32`, where
@@ -129,6 +134,14 @@ closest to the function driver, so this puts the filter between `mouhid` and
 `mouclass`, which is where it has to be to receive `IOCTL_INTERNAL_MOUSE_CONNECT`.
 On a stock machine the list reads `nimbus_moufilter, mouclass` afterwards.
 
+`install-dev.ps1` also registers the `NimbusMouseFilterGuard` scheduled task,
+which detaches the filter if this machine ever stops being able to load it.
+That is a different risk from a bad install, and it is the one that has
+actually happened here: see
+[If the machine stops being able to load the driver](#if-the-machine-stops-being-able-to-load-the-driver).
+`-NoGuard` skips it, which is only sensible if you have a second pointing
+device or are deliberately testing the unguarded failure.
+
 Then, from the repo root:
 
 ```powershell
@@ -146,7 +159,113 @@ driver. `install-dev.ps1` refuses to continue if it finds such a service, and
 **While test signing is on, anti-cheat games (EasyAntiCheat, BattlEye, Vanguard)
 refuse to start.** Validate the filter against the fake-game probe and a
 non-anti-cheat game under test signing; Elden Ring validation waits for an
-attestation-signed build.
+attestation-signed build. To go and play one, use
+`driver\disable-testsigning.ps1`, **not** `bcdedit` on its own; the next
+section is why.
+
+## If the machine stops being able to load the driver
+
+**This is the one failure that takes the whole mouse away, and it does not
+happen at install time.**
+
+A class upper filter is mandatory once listed. If `nimbus_moufilter` is named
+in the mouse class `UpperFilters` and Windows will not load it, Windows does
+not start the mouse devices at all. Not a degraded mouse, and not a mouse
+without isolation. No mouse.
+
+`install-dev.ps1` checks the signature and the running boot's Code Integrity
+state before it attaches anything, verifies afterwards, and rolls back if the
+driver did not load, so the install itself is safe. The dangerous state is the
+**drift afterwards**: the filter stays registered while the machine quietly
+stops accepting the test-signed `.sys`. Anything that does that arms the trap.
+
+- A Windows update that resets boot configuration.
+- `bcdedit /set testsigning off`, which is exactly what you do to play an
+  anti-cheat game or to get rid of the Test Mode watermark.
+- Secure Boot switched back on in firmware.
+- A rebuild signed with a certificate that is no longer in the machine stores.
+
+Nothing warns you when it happens. The mouse keeps working until the next
+mouse restart or reboot, and then it is gone.
+
+### What it looks like
+
+| Where | What you see |
+|---|---|
+| Device Manager / `Get-PnpDevice -Class Mouse` | `Status: Error`, `DEVPKEY_Device_ProblemCode` **52** (`CM_PROB_UNSIGNED_DRIVER`), problem status `0xC0000428` (`STATUS_INVALID_IMAGE_HASH`). Other load failures give Code 39 or Code 19 instead. |
+| `sc.exe query nimbus_moufilter` | `STOPPED`, win32 exit code `1077` (never started). |
+| System event log, Kernel-PnP id 219 | `The driver \Driver\nimbus_moufilter failed to load. Status: 0xC0000428`, once per device start attempt. |
+| The `UpperFilters` value | Still reads `nimbus_moufilter, mouclass`. That is the thing to remove. |
+
+`Get-AuthenticodeSignature` is not enough to tell you this is coming: with the
+test certificate still in the machine stores it reports `Valid` while Code
+Integrity refuses the driver anyway. The question is whether test signing is
+active in **this boot**, which `check-mouse-filter.ps1` reads from
+`NtQuerySystemInformation(SystemCodeIntegrityInformation)` rather than from
+`bcdedit` (which shows the stored setting, and therefore the *next* boot).
+
+**A remote desktop tool still working is misleading.** TeamViewer and the like
+move the cursor with `SendInput` in user mode, which never goes through
+`mouclass`, so the remote cursor keeps working perfectly over a machine whose
+physical mouse device is dead. Do not read that as the mouse being fine. Do
+use it to accept the UAC prompt for the fix.
+
+### The guards
+
+1. **Before**: `driver\check-mouse-filter.ps1`, read-only and no elevation.
+   Exits 0 when safe, 1 when the filter is registered but would not load, and
+   2 when the mouse is already broken. Run it before a reboot, before turning
+   test signing off, and after Windows updates.
+2. **Instead of the sharp edge**: `driver\disable-testsigning.ps1` detaches the
+   filter first and only then changes the boot setting, which is the same two
+   steps in the only order that cannot strand you.
+3. **After, automatically**: the `NimbusMouseFilterGuard` scheduled task, which
+   `install-dev.ps1` registers (skip with `-NoGuard`). It runs
+   `nimbus-mouse-guard.ps1` as SYSTEM at startup and once a day, and detaches
+   the filter when it is registered but unloadable. The daily run is the one
+   that matters most: it disarms the trap while the mouse still works. The
+   startup run is the backstop, and costs one repaired boot rather than a dead
+   machine. It logs to `%ProgramData%\ProjectNimbus\logs\mouse-guard.log` and
+   to the Application event log (source `Nimbus Mouse Filter Guard`). It is
+   deliberately timid: it acts only when it can show the filter is registered
+   and will not load, it leaves a partly-broken set of mice alone, it does
+   nothing when it cannot read the Code Integrity state, and it never writes an
+   `UpperFilters` list without `mouclass`.
+
+### Recovery
+
+The keyboard is never filtered, so this is always recoverable without a mouse:
+`Win+X`, then `A` for an elevated PowerShell.
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass -Force
+& "C:\path\to\Nimbus-Adaptive-Controller\driver\recover-mouse.ps1"
+```
+
+That detaches the filter and restarts the mice, and the mouse is back with no
+reboot. It leaves the service and the `.sys` alone, so `install-dev.ps1`
+re-arms it later. Use `uninstall-dev.ps1` instead to remove the dev install
+entirely. With no repo reachable, the same fix by hand:
+
+```
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\Class\{4D36E96F-E325-11CE-BFC1-08002BE10318}" /v UpperFilters /t REG_MULTI_SZ /d mouclass /f
+```
+
+then replug the mouse or reboot. **Never delete the value**: `mouclass` is the
+mouse class driver itself and has to stay in it.
+
+To get the filter back afterwards: `enable-testsigning.ps1`, reboot, then
+`install-dev.ps1`.
+
+### It has happened
+
+2026-09-07, the development machine. The filter had been installed and verified
+on 2026-09-06. Test signing was off by the next boot, so Kernel-PnP logged
+`0xC0000428` at every device start from 18:08 on 2026-09-06 and the machine
+came up on 2026-09-07 with no mouse, problem code 52, while TeamViewer worked
+normally and hid how total the failure was. `recover-mouse.ps1` did not exist
+yet; the fix was the `UpperFilters` edit plus `pnputil /restart-device`, which
+is what that script now does. Every guard above was written in response.
 
 ## Safety
 
@@ -201,10 +320,16 @@ attestation-signed build.
   other process; see "Security model" below.
 - A class upper filter is **mandatory once listed**: if the driver fails to
   load, Windows does not start the mouse devices (Device Manager Code 39 or
-  Code 19) until the `UpperFilters` entry is removed. `install-dev.ps1`
-  therefore creates a restore point first, verifies after attaching, and
-  rolls the registry entry back automatically if the driver is not running
-  or any mouse reports a problem.
+  Code 19, or Code 52 when the signature is what was rejected) until the
+  `UpperFilters` entry is removed. `install-dev.ps1` therefore creates a
+  restore point first, verifies after attaching, and rolls the registry entry
+  back automatically if the driver is not running or any mouse reports a
+  problem. That covers the install. It cannot cover the machine changing
+  afterwards, which is the case that actually bit us, so a filter that is
+  registered but no longer loadable is detached by the
+  `NimbusMouseFilterGuard` task at startup and daily. See
+  [If the machine stops being able to load the driver](#if-the-machine-stops-being-able-to-load-the-driver),
+  which is the section to read before turning test signing off.
 
 ## Security model
 
@@ -307,10 +432,11 @@ privilege.
 | Symptom | What happened | Recovery |
 |---|---|---|
 | Mouse dead right after `install-dev.ps1`, script reported a rollback | Driver did not load (signature, test signing, or a load-time bug) | Nothing to do; the rollback already removed the entry. Replug the mouse if it has not come back. Read the reason the script printed. |
-| Mouse dead, no rollback (script interrupted, or `-NoRollback`) | `UpperFilters` still names a driver that will not start | Keyboard: `Win+X`, `A` for an elevated PowerShell, run `driver\uninstall-dev.ps1`, replug the mouse. Or in `regedit`, under `HKLM\SYSTEM\CurrentControlSet\Control\Class\{4D36E96F-E325-11CE-BFC1-08002BE10318}`, edit `UpperFilters` so it reads only `mouclass` (the list normally holds `nimbus_moufilter` above `mouclass`; **`mouclass` must stay**, it is the mouse class driver itself). |
+| Mouse dead, no rollback (script interrupted, or `-NoRollback`) | `UpperFilters` still names a driver that will not start | Keyboard: `Win+X`, `A` for an elevated PowerShell, run `driver\recover-mouse.ps1`, which detaches the filter and restarts the mice (`uninstall-dev.ps1` also works and removes the whole dev install). Or in `regedit`, under `HKLM\SYSTEM\CurrentControlSet\Control\Class\{4D36E96F-E325-11CE-BFC1-08002BE10318}`, edit `UpperFilters` so it reads only `mouclass` (the list normally holds `nimbus_moufilter` above `mouclass`; **`mouclass` must stay**, it is the mouse class driver itself). |
+| Mouse dead after a reboot or a Windows update, with an install that had been working | The machine stopped accepting the test-signed driver while the filter stayed registered, so no mouse device starts: problem code 52, Kernel-PnP 219 with `0xC0000428`. A remote desktop tool still works and hides how total this is | Elevated `driver\recover-mouse.ps1`, no reboot needed. Then read [If the machine stops being able to load the driver](#if-the-machine-stops-being-able-to-load-the-driver); the `NimbusMouseFilterGuard` task exists to repair this by itself, so if it did not, check the guard's log at `%ProgramData%\ProjectNimbus\logs\mouse-guard.log`. |
 | Blue screen when a mouse starts (possibly at every boot) | A bug in the filter | Windows opens the recovery environment after two failed boots (or hold Shift while clicking Restart). Troubleshoot, Advanced options, System Restore, pick the "Before Nimbus Mouse Filter dev install" point. Alternative from the recovery Command Prompt: `reg load HKLM\sys C:\Windows\System32\config\SYSTEM`, then `reg add "HKLM\sys\ControlSet001\Control\Class\{4D36E96F-E325-11CE-BFC1-08002BE10318}" /v UpperFilters /t REG_MULTI_SZ /d mouclass /f`, then `reg unload HKLM\sys`. Never delete the value outright: `mouclass` has to remain in it. |
 | Cursor frozen while Nimbus is running | Isolation is on without the cursor relay, or the relay's reader thread is stuck | With the relay the cursor should keep moving; frozen means the reader is not running. `Ctrl+Alt+F12` releases (polled by the client). Or close Nimbus (Alt+F4 or Task Manager from the keyboard); closing the handle releases immediately. The watchdog releases within 2 s if Nimbus stops issuing reads, including when it is frozen (interface v3). |
 | Mouse dead on the lock screen or a UAC prompt while Nimbus is in Game Mode | The client's secure-desktop pause did not kick in (it checks the input desktop every 100 ms) | The keyboard works: unlock or dismiss the prompt from it and the mouse is back on the desktop. Then file the bug; `Ctrl+Alt+F12` cannot reach the secure desktop. |
 | Cursor frozen and Nimbus is gone | Should not happen (handle cleanup clears isolation) | Replug the mouse (a fresh device instance), or reboot; the flag does not survive a driver reload. Then file the bug with the output of `--status`. |
 | Mouse dead and Nimbus is not the one holding it | Some other process opened the control device and is isolating (see "Security model"): the watchdog will not release it while that process keeps reading, and `Ctrl+Alt+F12` is polled by Nimbus, not by the holder | The device is exclusive, so `--status` cannot answer while it is held. Find the owner of a handle to `\Device\NimbusMouseFilter` (Process Explorer, "Find Handle or DLL", or `handle.exe NimbusMouseFilter`) and end that process from the keyboard; handle cleanup releases immediately. Failing that, elevated `driver\uninstall-dev.ps1` and replug the mouse. |
-| "Test Mode" watermark, anti-cheat games refuse to start | Test signing is on | `bcdedit /set testsigning off` from an elevated prompt, reboot. Do this before playing EAC/BattlEye/Vanguard titles; the unsigned dev driver cannot load without it. |
+| "Test Mode" watermark, anti-cheat games refuse to start | Test signing is on | Elevated `driver\disable-testsigning.ps1`, then reboot. Do this before playing EAC/BattlEye/Vanguard titles. **Do not just run `bcdedit /set testsigning off`**: the dev driver cannot load without test signing, and a filter that is registered and cannot load means the mice do not start at all, so you would reboot into a machine with no mouse. The script detaches the filter first, which is the only ordering that is safe. |

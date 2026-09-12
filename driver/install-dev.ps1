@@ -18,6 +18,14 @@
        automatically (removes the UpperFilters entry and restarts the mice
        again) so you are not left without a mouse. -NoRestart skips this
        step and its safety net; see below.
+    7. Registers the "NimbusMouseFilterGuard" scheduled task, which detaches
+       the filter at startup and once a day if the machine has stopped being
+       able to load it. Step 6 protects the install. This protects every boot
+       after it, which is where the real risk is: the filter stays registered
+       while the machine drifts (a Windows update that resets boot
+       configuration, "bcdedit /set testsigning off" for an anti-cheat game,
+       Secure Boot switched back on), and the next boot has no mouse.
+       -NoGuard skips it.
 
     Before touching anything the script checks that the driver's signature
     verifies and, unless it is Microsoft attestation-signed, that test
@@ -44,11 +52,19 @@
 .PARAMETER NoRollback
     Keep the filter registered even if verification fails (for debugging with
     a second pointing device or over remote access).
+
+.PARAMETER NoGuard
+    Skip registering the NimbusMouseFilterGuard scheduled task. Only do this
+    if you are deliberately testing the unguarded failure, or if you have
+    another pointing device: without it, anything that stops Code Integrity
+    accepting the .sys later leaves the machine with no mouse at the next
+    boot, recoverable only from the keyboard.
 #>
 param(
     [string]$Sys = (Join-Path $PSScriptRoot 'out\nimbus_moufilter.sys'),
     [switch]$NoRestart,
-    [switch]$NoRollback
+    [switch]$NoRollback,
+    [switch]$NoGuard
 )
 
 $ErrorActionPreference = 'Stop'
@@ -133,6 +149,60 @@ function Invoke-Rollback {
     Write-Host 'Why it failed: System event log, Service Control Manager events 7000/7026, and Microsoft-Windows-CodeIntegrity/Operational events 3077/3004.'
     Get-WinEvent -FilterHashtable @{LogName='System'; Id=7000,7026; StartTime=(Get-Date).AddMinutes(-5)} -MaxEvents 5 -ErrorAction SilentlyContinue |
         ForEach-Object { Write-Host ("  {0} {1}" -f $_.TimeCreated, $_.Message.Split("`n")[0]) }
+}
+
+function Install-BootGuard {
+    <#
+        Register the self-heal task. The rollback above protects this install;
+        this protects every boot after it, when the machine can drift out from
+        under a filter that installed cleanly.
+
+        The scripts are copied to ProgramData rather than run from the repo:
+        the working tree can move, be deleted, or sit on a drive that is not
+        ready when a SYSTEM task runs at startup.
+
+        Best effort. A machine that cannot register the task still has a
+        verified install, so this warns instead of failing.
+    #>
+    $guardDir = Join-Path $env:ProgramData 'ProjectNimbus\driver'
+    $guardSrc = Join-Path $PSScriptRoot 'nimbus-mouse-guard.ps1'
+    $helperSrc = Join-Path $PSScriptRoot 'pnp-common.ps1'
+    $guardDest = Join-Path $guardDir 'nimbus-mouse-guard.ps1'
+
+    if (-not (Test-Path $guardSrc)) {
+        Write-Warning "Boot guard not registered: $guardSrc is missing."
+        return
+    }
+
+    New-Item -ItemType Directory -Path $guardDir -Force | Out-Null
+    Copy-Item $guardSrc $guardDest -Force
+    Copy-Item $helperSrc (Join-Path $guardDir 'pnp-common.ps1') -Force
+
+    # The guard writes to the Application log. Creating an event source needs
+    # elevation, so do it here; the guard itself only ever writes.
+    try {
+        if (-not [System.Diagnostics.EventLog]::SourceExists('Nimbus Mouse Filter Guard')) {
+            New-EventLog -LogName Application -Source 'Nimbus Mouse Filter Guard' -ErrorAction Stop
+        }
+    } catch {
+        Write-Warning "Could not register the event log source ($($_.Exception.Message)); the guard still writes its log file."
+    }
+
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
+        -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$guardDest`""
+    # At startup for the boot that would otherwise have no mouse, and daily so
+    # an armed-but-unloadable machine is repaired while the mouse still works.
+    $triggers = @(
+        (New-ScheduledTaskTrigger -AtStartup),
+        (New-ScheduledTaskTrigger -Daily -At '03:00')
+    )
+    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+    Register-ScheduledTask -TaskName 'NimbusMouseFilterGuard' -Action $action -Trigger $triggers `
+        -Principal $principal -Settings $settings -Force `
+        -Description 'Detaches the Nimbus Mouse Filter if it is registered as a mouse class upper filter but can no longer load, so the machine never boots without a mouse.' | Out-Null
+    Write-Host "Boot guard registered: scheduled task NimbusMouseFilterGuard (SYSTEM, at startup and daily), running $guardDest"
 }
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -260,7 +330,17 @@ try {
 
 if ($verified) {
     Write-Host 'Install verified. The filter is attached and passing through.'
+    if ($NoGuard) {
+        Write-Warning 'Boot guard NOT registered (-NoGuard). If this machine later stops accepting the driver signature (a Windows update, test signing turned off, Secure Boot switched on), the next boot has no mouse and recovery is keyboard-only.'
+    } else {
+        try {
+            Install-BootGuard
+        } catch {
+            Write-Warning "Could not register the boot guard ($($_.Exception.Message)). The install itself is fine, but nothing will detach the filter if this machine later refuses to load it. Run driver\check-mouse-filter.ps1 before reboots and before turning test signing off."
+        }
+    }
     Write-Host 'Next:  venv\Scripts\python -m src.mouse_isolation_win --status'
+    Write-Host 'Check any time (no elevation needed):  driver\check-mouse-filter.ps1'
     exit 0
 }
 if ($NoRollback) { exit 2 }

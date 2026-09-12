@@ -9,7 +9,13 @@
     filtered mouse restarts), deletes the service, deletes the file, and
     removes any nimbus_moufilter.inf package that pnputil left in the Driver
     Store (an INF install points the service there instead of at
-    System32\drivers, which install-dev.ps1 refuses to update).
+    System32\drivers, which install-dev.ps1 refuses to update). It also
+    removes the NimbusMouseFilterGuard scheduled task and its copies under
+    %ProgramData%\ProjectNimbus\driver.
+
+    To get the mouse back without giving up the dev install, use
+    recover-mouse.ps1 instead: it detaches the filter and leaves the service
+    and the .sys alone.
 #>
 param([switch]$NoRestart)
 
@@ -61,4 +67,33 @@ try {
 } catch {
     Write-Warning "Could not check the Driver Store ($($_.Exception.Message)). If the driver was ever added with pnputil, find it with 'pnputil /enum-drivers' and remove it with 'pnputil /delete-driver oemNN.inf /uninstall'."
 }
+# The boot guard exists to detach a filter that will not load. With the filter
+# gone there is nothing left for it to do, and a task pointing at a deleted
+# install is just confusing.
+$guardTask = Get-ScheduledTask -TaskName 'NimbusMouseFilterGuard' -ErrorAction SilentlyContinue
+if ($guardTask) {
+    try {
+        Unregister-ScheduledTask -TaskName 'NimbusMouseFilterGuard' -Confirm:$false -ErrorAction Stop
+        Write-Host 'Removed scheduled task NimbusMouseFilterGuard'
+    } catch {
+        Write-Warning "Could not remove the NimbusMouseFilterGuard task ($($_.Exception.Message)). Remove it by hand in Task Scheduler."
+    }
+} else {
+    Write-Host 'Scheduled task NimbusMouseFilterGuard is not registered'
+}
+
+$guardDir = Join-Path $env:ProgramData 'ProjectNimbus\driver'
+if (Test-Path $guardDir) {
+    # Only the two files the installer put there; ProjectNimbus holds other
+    # things (the guard's own logs, for one) that are worth keeping.
+    foreach ($name in 'nimbus-mouse-guard.ps1', 'pnp-common.ps1') {
+        $path = Join-Path $guardDir $name
+        if (Test-Path $path) { Remove-Item $path -Force -ErrorAction SilentlyContinue }
+    }
+    if (-not (Get-ChildItem $guardDir -Force -ErrorAction SilentlyContinue)) {
+        Remove-Item $guardDir -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host "Removed the guard scripts from $guardDir"
+}
+
 Write-Host 'Done.'
