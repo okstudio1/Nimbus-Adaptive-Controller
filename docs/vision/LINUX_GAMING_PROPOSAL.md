@@ -7,7 +7,7 @@
 **Baseline:** Local documentation branch at `df6da21`; Linux implementation reviewed in [PR #3](https://github.com/owenpkent/Nimbus-Adaptive-Controller/pull/3), commit `8a4114e`, still open when this proposal was written.
 **Related work:** [Linux Probe Plan](LINUX_PROBE_PLAN.md), [Host Mode and Input Isolation](HOST_MODE_ISOLATION.md), [Hardware Integration](HARDWARE_INTEGRATION.md), [Keyboard Output](KEYBOARD_OUTPUT.md).
 
-**Optional VM research:** [Virtual Machine Feasibility](VIRTUAL_MACHINE_FEASIBILITY.md) evaluates a minimal dedicated Steam Linux guest with explicit resource budgets, plus a separate Windows compatibility track. It does not change the X11-primary release gates in this proposal.
+**Optional VM research:** [Virtual Machine Feasibility](VIRTUAL_MACHINE_FEASIBILITY.md) asks whether a guest VM buys anything on the Windows host, and concludes it does not. Its KVM/QEMU, VFIO and Looking Glass material describes a Linux host and belongs with this track if it is ever pursued. It does not gate anything in this proposal.
 
 ## 1. Decision and intended result
 
