@@ -1426,11 +1426,6 @@ class ControllerBridge(QObject):
         print(f"Output mode switched to: {self.getControllerType()}")
 
     # ----- Borderless gaming -----
-    @Slot(result=bool)
-    def isBorderlessAvailable(self) -> bool:  # noqa: N802
-        """Check if borderless gaming module is available."""
-        return BORDERLESS_AVAILABLE
-
     @Slot(result="QVariantList")
     def getWindowList(self) -> list:  # noqa: N802
         """Get list of visible windows for the game picker."""
@@ -1455,38 +1450,6 @@ class ControllerBridge(QObject):
         except Exception as e:
             print(f"[bridge] getWindowList error: {e}")
             return []
-
-    @Slot(result="QVariantMap")
-    def autoDetectGame(self) -> dict:  # noqa: N802
-        """Auto-detect a known game from running windows."""
-        if not BORDERLESS_AVAILABLE:
-            return {}
-        try:
-            result = _borderless.auto_detect_game()
-            if result:
-                win, game = result
-                return {
-                    "hwnd": win.hwnd,
-                    "title": win.title,
-                    "gameName": game.name,
-                    "status": game.status,
-                    "notes": game.notes,
-                    "recommendedInterval": game.recommended_interval_ms,
-                }
-        except Exception as e:
-            print(f"[bridge] autoDetectGame error: {e}")
-        return {}
-
-    @Slot(int, result=bool)
-    def makeGameBorderless(self, hwnd: int) -> bool:  # noqa: N802
-        """Make a game window borderless (keep current position/size)."""
-        if not BORDERLESS_AVAILABLE:
-            return False
-        try:
-            return _borderless.make_borderless(hwnd)
-        except Exception as e:
-            print(f"[bridge] makeGameBorderless error: {e}")
-            return False
 
     @Slot(int, int, int, int, int, result=bool)
     def makeGameBorderlessAt(self, hwnd: int, x: int, y: int, w: int, h: int) -> bool:  # noqa: N802
@@ -1521,49 +1484,6 @@ class ControllerBridge(QObject):
             print(f"[bridge] resizeGameWindow error: {e}")
             return False
 
-    @Slot(int, result=bool)
-    def restoreGameWindow(self, hwnd: int) -> bool:  # noqa: N802
-        """Restore a game window's original decorations."""
-        if not BORDERLESS_AVAILABLE:
-            return False
-        try:
-            return _borderless.restore_window(hwnd)
-        except Exception as e:
-            print(f"[bridge] restoreGameWindow error: {e}")
-            return False
-
-    @Slot(int, int, result=bool)
-    def applyBorderlessAndRelease(self, hwnd: int, interval_ms: int) -> bool:  # noqa: N802
-        """Make borderless AND start aggressive cursor release."""
-        if not BORDERLESS_AVAILABLE:
-            return False
-        try:
-            return _borderless.apply_borderless_and_release(hwnd, interval_ms)
-        except Exception as e:
-            print(f"[bridge] applyBorderlessAndRelease error: {e}")
-            return False
-
-    @Slot(int, result=bool)
-    def restoreAndStopRelease(self, hwnd: int) -> bool:  # noqa: N802
-        """Restore window and stop cursor release."""
-        if not BORDERLESS_AVAILABLE:
-            return False
-        try:
-            return _borderless.restore_and_stop_release(hwnd)
-        except Exception as e:
-            print(f"[bridge] restoreAndStopRelease error: {e}")
-            return False
-
-    @Slot(int)
-    def startCursorRelease(self, interval_ms: int) -> None:  # noqa: N802
-        """Start cursor release without borderless (standalone)."""
-        if not BORDERLESS_AVAILABLE:
-            return
-        try:
-            _borderless.start_cursor_release(interval_ms, game_hwnd=0)
-        except Exception as e:
-            print(f"[bridge] startCursorRelease error: {e}")
-
     @Slot(int, int)
     def startCursorReleaseWithHwnd(self, interval_ms: int, game_hwnd: int) -> None:  # noqa: N802
         """Start cursor release with game HWND for thread-attached release."""
@@ -1573,23 +1493,6 @@ class ControllerBridge(QObject):
             _borderless.start_cursor_release(interval_ms, game_hwnd=game_hwnd)
         except Exception as e:
             print(f"[bridge] startCursorReleaseWithHwnd error: {e}")
-
-    @Slot()
-    def stopCursorRelease(self) -> None:  # noqa: N802
-        """Stop cursor release."""
-        if not BORDERLESS_AVAILABLE:
-            return
-        try:
-            _borderless.stop_cursor_release()
-        except Exception as e:
-            print(f"[bridge] stopCursorRelease error: {e}")
-
-    @Slot(result=bool)
-    def isCursorReleaseActive(self) -> bool:  # noqa: N802
-        """Check if cursor release is currently running."""
-        if not BORDERLESS_AVAILABLE:
-            return False
-        return _borderless.is_cursor_release_active()
 
     @Slot(result="QVariantList")
     def getGameCompatList(self) -> list:  # noqa: N802
@@ -1660,14 +1563,6 @@ class ControllerBridge(QObject):
     def isBundledProfile(self) -> bool:  # noqa: N802
         """Return True if the current profile is a built-in (bundled) profile."""
         return self._config.is_builtin_profile(self._config.get_current_profile())
-
-    @Slot(str, str, result=str)
-    def createProfileAs(self, name: str, description: str = "") -> str:  # noqa: N802
-        """Create a new blank profile and return its ID (empty string on failure)."""
-        new_id = self._config.create_profile_as(name, description)
-        if new_id:
-            self.profilesListChanged.emit()
-        return new_id or ""
 
     @Slot(int, result=str)
     def getButtonLabel(self, button_id: int) -> str:  # noqa: N802

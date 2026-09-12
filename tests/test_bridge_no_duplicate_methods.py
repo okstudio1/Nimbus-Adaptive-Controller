@@ -12,9 +12,9 @@ This parses ``src/bridge.py`` rather than importing it, so it sees every
 definition rather than only the ones that survived binding. Property and
 setter pairs are legitimate and excluded.
 
-``KNOWN`` holds duplicates that predate this check. They are real defects of
-the same kind, each one dead code today, and the list is meant to shrink.
-Adding to it should be a deliberate act, not the fix for a failing run.
+``KNOWN`` is the tolerated-duplicates list. It is empty. Adding to it should
+be a deliberate act with a reason, not the fix for a failing run: a duplicate
+means one of the two definitions is dead code.
 """
 
 import ast
@@ -25,20 +25,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 BRIDGE = Path(__file__).resolve().parent.parent / "src" / "bridge.py"
 
-#: Duplicates inherited from before this test existed. Each is a bug: the
-#: earlier definition never runs. Shrink this list, do not grow it.
-KNOWN = {
-    "applyBorderlessAndRelease",
-    "autoDetectGame",
-    "createProfileAs",
-    "isBorderlessAvailable",
-    "isCursorReleaseActive",
-    "makeGameBorderless",
-    "restoreAndStopRelease",
-    "restoreGameWindow",
-    "startCursorRelease",
-    "stopCursorRelease",
-}
+#: Duplicates that are tolerated. Empty, and meant to stay that way: every
+#: entry is a method whose earlier definition never runs. The ten that were
+#: here when this test was written have since been removed, after checking in
+#: each case that the surviving definition was the correct one.
+KNOWN: set = set()
 
 PASSES = 0
 FAILS = 0
