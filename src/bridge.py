@@ -12,12 +12,18 @@ underlying subsystems:
   releases the mouse)
 * :mod:`~src.window_utils` — ``WS_EX_NOACTIVATE`` "Game Focus" mode
 * :class:`~src.config.ControllerConfig` — persistent settings + profiles
+* :mod:`~src.mouse_isolation_win`: the Nimbus Mouse Filter driver plus the
+  cursor relay (Full Game Mode takes the physical mouse away from the game
+  while the real cursor keeps working)
 
 Bridge responsibilities
 -----------------------
 * Translate QML method calls (``Slot``\\ s) into back-end operations.
-* Apply per-axis sensitivity curves and optional smoothing before forwarding
-  values to the active controller interface.
+* Shape every axis before it reaches a driver: the tremor filter, the
+  precision modifier, the radial deadzone and response curve, the output
+  anti-deadzone, the extremity cap, and per-widget inversion all happen
+  here (:meth:`ControllerBridge.setStickInput`,
+  :meth:`ControllerBridge.setAxisInput`). QML sends raw geometry only.
 * Persist UI state (scale factor, debug borders, recent profiles, etc.) via
   :class:`ControllerConfig`.
 * Emit Qt signals (``profileChanged``, ``vjoyConnectionChanged`` ...) so QML
@@ -37,14 +43,32 @@ property ``controller``.
 """
 from __future__ import annotations
 
+import json
 import sys
-from typing import Optional
+import time
+from typing import Any, Dict, Optional, Tuple
 
 from PySide6.QtCore import QObject, Slot, Signal, Property, QTimer
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QPointF, Qt
+from PySide6.QtGui import QGuiApplication, QMouseEvent, QWheelEvent
 from PySide6.QtGui import QCursor, QWindow
 
-from .config import ControllerConfig
+from .config import (
+    ControllerConfig,
+    DEFAULT_ANTI_DEADZONE_BUFFER,
+    DEFAULT_DEAD_ZONE_PCT,
+    DEFAULT_EXTREMITY_PCT_AXIS,
+    DEFAULT_EXTREMITY_PCT_STICK,
+    DEFAULT_PRECISION_GAIN,
+    DEFAULT_SENSITIVITY_PCT,
+    DEFAULT_TREMOR_FILTER,
+    XINPUT_LEFT_THUMB_DEADZONE,
+    XINPUT_RIGHT_THUMB_DEADZONE,
+    shape_magnitude,
+    shape_vector,
+)
 from .vjoy_interface import VJoyInterface
+from .controller_output import ControllerOutput
 from .qt_dialogs import AxisMappingQt, JoystickSettingsQt, ButtonSettingsQt, SliderSettingsQt, AxisSettingsQt
 
 # Try to import ViGEm for Xbox controller emulation (preferred for modern games)
@@ -63,6 +87,7 @@ try:
         is_no_activate_enabled,
         save_foreground_window,
         on_window_activated,
+        set_foreground_window,
     )
     WINDOW_UTILS_AVAILABLE = True
 except Exception:
@@ -83,6 +108,38 @@ try:
 except Exception:
     MOUSE_HIDER_AVAILABLE = False
     _mouse_hider = None
+
+# Mouse isolation: the physical mouse is taken away from every other
+# application. Windows: the Nimbus Mouse Filter driver plus the cursor relay
+# (src/mouse_isolation_win.py); the flag is True only when the driver's control
+# device exists, so a machine without it keeps today's mouse_hider Game Mode.
+# Linux (linux-uinput-support branch): evdev grab + software cursor, same API.
+try:
+    if sys.platform == "win32":
+        from . import mouse_isolation_win as _mouse_isolation
+    else:
+        _mouse_isolation = None
+    MOUSE_ISOLATION_AVAILABLE = bool(_mouse_isolation and _mouse_isolation.MOUSE_ISOLATION_AVAILABLE)
+except Exception:
+    MOUSE_ISOLATION_AVAILABLE = False
+    _mouse_isolation = None
+
+# evdev button code -> Qt button, for clicks that land on Nimbus's own window.
+# BTN_SIDE and BTN_EXTRA are here too: without them a side-button click over
+# Nimbus fell through to SendInput and a foreground Raw Input game saw it,
+# which is the leak the relay exists to close.
+_ISO_BUTTON_MAP = {0x110: Qt.MouseButton.LeftButton, 0x111: Qt.MouseButton.RightButton,
+                   0x112: Qt.MouseButton.MiddleButton, 0x113: Qt.MouseButton.BackButton,
+                   0x114: Qt.MouseButton.ForwardButton}
+
+
+class _IsolationRelay(QObject):
+    """Marshals mouse-isolation reader-thread callbacks onto the Qt thread."""
+
+    motion = Signal(int, int)
+    button = Signal(int, bool)
+    wheel = Signal(int, int)
+    stopped = Signal(str)
 
 
 class ControllerBridge(QObject):
@@ -124,6 +181,7 @@ class ControllerBridge(QObject):
         recentProfilesChanged(): Recent-profiles list updated.
     """
 
+    mouseIsolationChanged = Signal(bool)  # Emits when the physical mouse is taken from, or given back to, the game
     scaleFactorChanged = Signal(float)
     vjoyConnectionChanged = Signal(bool)
     debugBordersChanged = Signal(bool)
@@ -138,8 +196,16 @@ class ControllerBridge(QObject):
     controllerModeChanged = Signal(bool)  # Emits when controller mode enforcement starts/stops
     outputModeChanged = Signal(str)  # Emits "vjoy" or "vigem" when output device changes
     recentProfilesChanged = Signal()  # Emits when the recently-used profile list changes
+    accountStateChanged = Signal()
+    privacyChanged = Signal()
+    syncCompleted = Signal(bool)
+    updateAvailable = Signal(str, str, str)
+    forceUpdateRequired = Signal(str, str)
+    noUpdateAvailable = Signal()
+    checkFailed = Signal(str)
 
-    def __init__(self, config: ControllerConfig, parent: Optional[QObject] = None) -> None:
+    def __init__(self, config: ControllerConfig, parent: Optional[QObject] = None,
+                 *, output: Optional[ControllerOutput] = None, services: Any = None) -> None:
         """Initialize the bridge and probe for available controller back ends.
 
         Selects ViGEm or vJoy based on the current profile's layout type and
@@ -153,20 +219,43 @@ class ControllerBridge(QObject):
         """
         super().__init__(parent)
         self._config = config
+        self._services = services
+        if services is not None:
+            services.cloud.authStateChanged.connect(self._notify_account)
+            services.cloud.userChanged.connect(self._notify_account)
+            services.cloud.entitlementChanged.connect(self._notify_account)
+            services.cloud.syncCompleted.connect(self._on_sync_completed)
+            services.cloud.profileUpdated.connect(self._on_remote_profile_updated)
+            services.updater.updateAvailable.connect(self.updateAvailable)
+            services.updater.forceUpdateRequired.connect(self.forceUpdateRequired)
+            services.updater.noUpdateAvailable.connect(self.noUpdateAvailable)
+            services.updater.checkFailed.connect(self.checkFailed)
         self._window: Optional[QWindow] = None
         self._no_focus_mode = False
         self._cursor_release_active = False
         self._borderless_game_hwnd: int = 0
         self._controller_mode_active = False
+        # Mouse isolation (Windows: kernel filter + cursor relay). The relay
+        # object turns reader-thread callbacks into queued signals.
+        self._iso = None
+        self._iso_active = False
+        self._iso_game_hwnd = 0
+        self._iso_nimbus_hwnd = 0
+        self._iso_buttons = Qt.MouseButton.NoButton
+        self._iso_last_press = None  # (monotonic time, button, x, y)
+        self._iso_relay = _IsolationRelay(self)
+        self._iso_relay.motion.connect(self._on_iso_motion, Qt.ConnectionType.QueuedConnection)
+        self._iso_relay.button.connect(self._on_iso_button, Qt.ConnectionType.QueuedConnection)
+        self._iso_relay.wheel.connect(self._on_iso_wheel, Qt.ConnectionType.QueuedConnection)
+        self._iso_relay.stopped.connect(self._on_iso_stopped, Qt.ConnectionType.QueuedConnection)
         # Load recent profiles from persistent config (most-recent first)
         self._recent_profiles: list = list(self._config.get("ui.recent_profiles", []))
         
         # Determine which controller interface to use based on profile layout type
         # ViGEm (Xbox emulation) is preferred for xbox/adaptive profiles as it works with XInput games
         # vJoy is used for flight_sim profiles or as fallback
-        self._use_vigem = False
-        self._vigem: Optional[ViGEmInterface] = None
-        self._vjoy: Optional[VJoyInterface] = None
+        self._output = output if output is not None else ControllerOutput(
+            config, VJoyInterface, ViGEmInterface, VIGEM_AVAILABLE)
         
         self._init_controller_interface()
         
@@ -175,6 +264,15 @@ class ControllerBridge(QObject):
         self._buttons_version = 0
         # Axis smoothing state: per-axis current and target in [-1,1]
         self._axis_state: dict[str, dict[str, float]] = {}
+        # Per-widget shaping: the current profile's custom_layout widgets by
+        # id, the tremor filter's EMA state, the last raw input (so a modifier
+        # change can re-shape a held stick), and the held modifiers.
+        self._widget_shaping: Dict[str, Dict[str, Any]] = {}
+        self._ema: Dict[str, Tuple[float, float]] = {}
+        self._last_raw: Dict[str, Tuple[float, float]] = {}
+        self._modifiers: Dict[str, bool] = {}
+        self._spectator = None   # Spectator+ primitive runner, created on first use (get_spectator)
+        self._reload_widget_shaping()
         # Timer to apply smoothing at vJoy update rate
         self._smooth_timer = QTimer(self)
         try:
@@ -190,42 +288,67 @@ class ControllerBridge(QObject):
     
     def _init_controller_interface(self) -> None:
         """Initialize the appropriate controller interface based on profile type."""
-        layout_type = self._config.get_layout_type()
-        use_vigem_config = self._config.get("controller.prefer_vigem", True)
-        
-        # Use ViGEm for Xbox/Adaptive/Custom profiles if available (works with XInput games like No Man's Sky)
-        if layout_type in ("xbox", "adaptive", "custom") and VIGEM_AVAILABLE and use_vigem_config:
-            print(f"Profile '{layout_type}' detected - using ViGEm Xbox controller emulation")
-            print("This provides XInput compatibility for games like No Man's Sky")
-            if self._vigem is None:
-                self._vigem = ViGEmInterface(self._config)
-            self._use_vigem = True
-            # Also init vJoy as fallback
-            if self._vjoy is None:
-                self._vjoy = VJoyInterface(self._config)
-        else:
-            # Use vJoy for flight sim profiles or if ViGEm unavailable
-            if layout_type in ("xbox", "adaptive") and not VIGEM_AVAILABLE:
-                print(f"Warning: ViGEm not available for {layout_type} profile")
-                print("Install with: pip install vgamepad")
-                print("Falling back to vJoy (may not work with XInput-only games)")
-            if self._vjoy is None:
-                self._vjoy = VJoyInterface(self._config)
-            self._use_vigem = False
+        self._output.initialize()
+
+    @property
+    def _vjoy(self):
+        return self._output.vjoy
+
+    @_vjoy.setter
+    def _vjoy(self, value):
+        self._output.vjoy = value
+
+    @property
+    def _vigem(self):
+        return self._output.vigem
+
+    @_vigem.setter
+    def _vigem(self, value):
+        self._output.vigem = value
+
+    @property
+    def _use_vigem(self):
+        return self._output.use_vigem
+
+    @_use_vigem.setter
+    def _use_vigem(self, value):
+        self._output.use_vigem = value
     
     def _is_controller_connected(self) -> bool:
         """Check if the active controller interface is connected."""
-        if self._use_vigem and self._vigem:
-            return self._vigem.is_connected
-        elif self._vjoy:
-            return self._vjoy.is_connected
-        return False
+        return self._output.connected
     
     def _get_active_interface(self):
         """Get the currently active controller interface."""
-        if self._use_vigem and self._vigem:
-            return self._vigem
-        return self._vjoy
+        return self._output.active
+
+    # ----- Spectator+ -----
+    def get_spectator(self):
+        """The Spectator+ primitive runner bound to this bridge's output.
+
+        Created on first use. Its primitives (turn by an angle, walk for a
+        distance, press a button) write through :meth:`setAxis` and
+        :meth:`setButton`, so they go through the active driver interface
+        and its limits, and bypass the widget shaping on purpose: that
+        shaping is for the user's own hand, and a turn of 90 degrees has to
+        be the same turn whatever curve the user has. A profile switch or
+        Ctrl+Alt+F12 stops a running primitive. See ``src/spectator``.
+
+        Returns:
+            The :class:`~src.spectator.primitives.PrimitiveRunner`.
+        """
+        if self._spectator is None:
+            from .spectator.primitives import PrimitiveRunner
+            self._spectator = PrimitiveRunner(self.setAxis, self.setButton, parent=self)
+        return self._spectator
+
+    def _stop_spectator(self) -> None:
+        """Cancel a running primitive, if any, and zero what it touched."""
+        if self._spectator is not None:
+            try:
+                self._spectator.stop()
+            except Exception:
+                pass
 
     # ----- Scale factor property -----
     def _get_scale(self) -> float:
@@ -470,12 +593,320 @@ class ControllerBridge(QObject):
         except Exception:
             return int(base)
 
-    # High-level control slots that apply curves and mapping, mirroring widget UI behavior
+    # ----- Stick and axis shaping -----
+    # Every axis value the QML sends is raw geometry. The bridge resolves the
+    # widget's settings, shapes the value, and forwards it to the driver.
+
+    def _reload_widget_shaping(self, widgets: Optional[list] = None) -> None:
+        """Rebuild the per-widget settings cache from the current profile.
+
+        Args:
+            widgets: The widget list to cache. When omitted it is read from
+                the current profile's ``custom_layout``.
+        """
+        try:
+            if widgets is None:
+                profile = self._config.get_current_profile_data() or {}
+                widgets = (profile.get("custom_layout") or {}).get("widgets", []) or []
+            cache: Dict[str, Dict[str, Any]] = {}
+            for w in widgets:
+                if isinstance(w, dict) and w.get("id"):
+                    cache[str(w["id"])] = w
+            self._widget_shaping = cache
+        except Exception:
+            self._widget_shaping = {}
+        self._ema.clear()
+        self._last_raw.clear()
+        # Modifiers belong to the layout that defined the buttons. QML recreates
+        # the widget delegates with their toggle visuals reset, so a latched
+        # precision left set here would silently slow every stick in a profile
+        # that has no button to unlatch it.
+        self._modifiers.clear()
+
+    def _default_anti_deadzone(self, axis: str) -> float:
+        """The output anti-deadzone a widget gets when it sets none.
+
+        The documented XInput stick deadzones when the output is ViGEm, zero
+        for vJoy (DirectInput games vary too much to guess) and for
+        trigger axes.
+        """
+        if not self._use_vigem:
+            return 0.0
+        a = str(axis or "").lower()
+        if a in ("x", "y"):
+            return XINPUT_LEFT_THUMB_DEADZONE
+        if a in ("rx", "ry"):
+            return XINPUT_RIGHT_THUMB_DEADZONE
+        return 0.0
+
+    def _widget_params(self, w: Dict[str, Any]) -> Dict[str, float]:
+        """Resolve a widget's shaping parameters, filling in the defaults."""
+        wtype = str(w.get("type", "joystick"))
+        mapping = w.get("mapping") or {}
+        if wtype == "joystick":
+            axis = str(mapping.get("axis_x") or "")
+            ext_default = DEFAULT_EXTREMITY_PCT_STICK
+        else:
+            axis = str(mapping.get("axis") or "")
+            ext_default = DEFAULT_EXTREMITY_PCT_AXIS
+        return {
+            "sensitivity": float(w.get("sensitivity", DEFAULT_SENSITIVITY_PCT)),
+            "dead_zone": float(w.get("dead_zone", DEFAULT_DEAD_ZONE_PCT)),
+            "extremity_dead_zone": float(w.get("extremity_dead_zone", ext_default)),
+            "anti_deadzone": float(w.get("anti_deadzone", self._default_anti_deadzone(axis))),
+            "anti_deadzone_buffer": float(w.get("anti_deadzone_buffer", DEFAULT_ANTI_DEADZONE_BUFFER)),
+        }
+
+    @staticmethod
+    def _params_from_json(params_json: str) -> Dict[str, float]:
+        """Shaping parameters from the config dialog's unsaved slider values."""
+        raw = json.loads(params_json) if params_json else {}
+        out: Dict[str, float] = {}
+        for key, default in (("sensitivity", DEFAULT_SENSITIVITY_PCT),
+                             ("dead_zone", DEFAULT_DEAD_ZONE_PCT),
+                             ("extremity_dead_zone", DEFAULT_EXTREMITY_PCT_STICK),
+                             ("anti_deadzone", 0.0),
+                             ("anti_deadzone_buffer", DEFAULT_ANTI_DEADZONE_BUFFER)):
+            try:
+                out[key] = float(raw.get(key, default))
+            except (TypeError, ValueError):
+                out[key] = float(default)
+        return out
+
+    def _filter_tremor(self, key: str, tremor_filter: float, nx: float, ny: float) -> Tuple[float, float]:
+        """Apply the per-widget EMA tremor filter to a raw input vector.
+
+        An input of exactly (0, 0) is a release: the filter state is dropped
+        and the output snaps to centre, so a heavily filtered stick can never
+        be left holding a residual deflection after the pointer lets go.
+        """
+        if nx == 0.0 and ny == 0.0:
+            self._ema.pop(key, None)
+            return 0.0, 0.0
+        tf = max(0.0, min(10.0, float(tremor_filter)))
+        if tf <= 0.0:
+            self._ema.pop(key, None)
+            return nx, ny
+        alpha = 1.0 - (tf / 10.0) * 0.9   # 1.0 = no smoothing, 0.1 = heavy
+        sx, sy = self._ema.get(key, (0.0, 0.0))
+        fx = sx + (nx - sx) * alpha
+        fy = sy + (ny - sy) * alpha
+        self._ema[key] = (fx, fy)
+        return fx, fy
+
+    def _precision_gain(self, w: Dict[str, Any]) -> float:
+        """Gain to apply right now: the widget's precision gain while the modifier is held."""
+        if not self._modifiers.get("precision"):
+            return 1.0
+        try:
+            return max(0.0, min(1.0, float(w.get("precision_gain", DEFAULT_PRECISION_GAIN))))
+        except (TypeError, ValueError):
+            return DEFAULT_PRECISION_GAIN
+
+    def _dispatch_stick(self, w: Dict[str, Any], ox: float, oy: float) -> None:
+        """Send a shaped stick vector to the axes a joystick widget maps."""
+        if not self._is_controller_connected():
+            return
+        mapping = w.get("mapping") or {}
+        ax = str(mapping.get("axis_x") or "none").lower()
+        ay = str(mapping.get("axis_y") or "none").lower()
+        if self._use_vigem and self._vigem:
+            if (ax, ay) == ("x", "y"):
+                self._vigem.set_left_stick(ox, oy)
+                return
+            if (ax, ay) == ("rx", "ry"):
+                self._vigem.set_right_stick(ox, oy)
+                return
+            if ax != "none":
+                self._vigem.update_axis(ax, ox)
+            if ay != "none":
+                self._vigem.update_axis(ay, oy)
+        else:
+            if ax != "none":
+                self._set_axis_target(ax, ox)
+            if ay != "none":
+                self._set_axis_target(ay, oy)
+
+    def _drive_stick(self, widget_id: str, w: Dict[str, Any], nx: float, ny: float,
+                     advance_filter: bool = True) -> Tuple[float, float]:
+        """Shape a raw stick vector for a widget and send it to the driver.
+
+        Returns the shaped vector in the widget's screen orientation (before
+        the y-axis flip and inversion), which is what the UI displays.
+
+        Args:
+            advance_filter: When False the tremor filter's state is reused
+                rather than stepped. A modifier change is not a new pointer
+                sample, so stepping the EMA there would move the stick as well
+                as rescale it.
+        """
+        if advance_filter:
+            fx, fy = self._filter_tremor(widget_id, float(w.get("tremor_filter", DEFAULT_TREMOR_FILTER)), nx, ny)
+        else:
+            fx, fy = self._ema.get(widget_id, (nx, ny))
+        ox, oy = shape_vector(fx, fy, gain=self._precision_gain(w), **self._widget_params(w))
+        # ny is screen-down positive; controller Y is up positive, so flip,
+        # then apply the widget's own inversion on top.
+        out_x = -ox if w.get("invert_x") else ox
+        out_y = oy if w.get("invert_y") else -oy
+        self._dispatch_stick(w, out_x, out_y)
+        return ox, oy
+
+    @Slot(str, float, float)
+    def setStickInput(self, widget_id: str, nx: float, ny: float) -> None:  # noqa: N802
+        """Raw deflection from a custom-layout joystick widget.
+
+        Args:
+            widget_id: The widget's profile id; selects its settings and mapping.
+            nx: Normalised deflection, right positive, before any shaping.
+            ny: Normalised deflection, screen-down positive, before any shaping.
+                (0, 0) is a release and always centres the output.
+        """
+        try:
+            w = self._widget_shaping.get(str(widget_id))
+            if w is None:
+                return
+            raw = (float(nx), float(ny))
+            if raw == (0.0, 0.0):
+                self._last_raw.pop(str(widget_id), None)
+            else:
+                self._last_raw[str(widget_id)] = raw
+            self._drive_stick(str(widget_id), w, raw[0], raw[1])
+        except Exception:
+            pass
+
+    @Slot(str, float)
+    def setAxisInput(self, widget_id: str, value: float) -> None:  # noqa: N802
+        """Raw value from a custom-layout slider or wheel widget.
+
+        A slider that holds or returns to zero is a unipolar control, so
+        ``value`` is 0 to 1 and is shaped from its bottom end: triggers (z
+        and rz under ViGEm) take the shaped value directly, any other axis
+        gets it spread over the full range. A centre-sprung slider and a
+        wheel are bipolar, so ``value`` is -1 to 1 and is shaped around the
+        centre.
+        """
+        try:
+            w = self._widget_shaping.get(str(widget_id))
+            if w is None:
+                return
+            mapping = w.get("mapping") or {}
+            axis = str(mapping.get("axis") or "none").lower()
+            if axis == "none":
+                return
+            params = self._widget_params(w)
+            gain = self._precision_gain(w) if w.get("type") == "wheel" else 1.0
+            unipolar = w.get("type") == "slider" and str(w.get("snap_mode", "none")) != "center"
+            v = float(value)
+            if unipolar:
+                fv, _ = self._filter_tremor(str(widget_id), float(w.get("tremor_filter", DEFAULT_TREMOR_FILTER)), v, 0.0)
+                m = shape_magnitude(max(0.0, min(1.0, fv)), gain=gain, **params)
+                if not self._is_controller_connected():
+                    return
+                if self._use_vigem and self._vigem and axis in ("z", "rz"):
+                    if axis == "z":
+                        self._vigem.set_left_trigger(m)
+                    else:
+                        self._vigem.set_right_trigger(m)
+                    return
+                out = m * 2.0 - 1.0
+            else:
+                fv, _ = self._filter_tremor(str(widget_id), float(w.get("tremor_filter", DEFAULT_TREMOR_FILTER)), v, 0.0)
+                m = shape_magnitude(abs(fv), gain=gain, **params)
+                out = m if fv >= 0 else -m
+            iface = self._get_active_interface()
+            if iface:
+                iface.update_axis(axis, out)
+        except Exception:
+            pass
+
+    @Slot(str, bool)
+    def setModifier(self, name: str, active: bool) -> None:  # noqa: N802
+        """Hold or release a modifier such as ``"precision"``.
+
+        A held stick is re-shaped immediately so the change is felt without
+        waiting for the next pointer event.
+        """
+        try:
+            key = str(name).lower()
+            active = bool(active)
+            if self._modifiers.get(key, False) == active:
+                return
+            self._modifiers[key] = active
+            for widget_id, (nx, ny) in list(self._last_raw.items()):
+                w = self._widget_shaping.get(widget_id)
+                if w is not None:
+                    # No new pointer sample arrived, so re-shape the filtered
+                    # vector the stick is already holding instead of feeding
+                    # the raw one through the EMA again. Otherwise toggling the
+                    # modifier walks a filtered stick toward its raw position,
+                    # changing where it points and not just how far.
+                    self._drive_stick(widget_id, w, nx, ny, advance_filter=False)
+        except Exception:
+            pass
+
+    @Slot(str, result=bool)
+    def isModifierActive(self, name: str) -> bool:  # noqa: N802
+        """Whether a modifier is currently held or latched."""
+        return bool(self._modifiers.get(str(name).lower(), False))
+
+    @Slot(str, result=float)
+    def defaultAntiDeadzone(self, axis: str) -> float:  # noqa: N802
+        """The anti-deadzone default for an axis under the current output mode."""
+        return float(self._default_anti_deadzone(axis))
+
+    @Slot(str, result="QVariantList")
+    def shapeCurve(self, params_json: str) -> list:  # noqa: N802
+        """Output magnitudes for inputs 0.00 to 1.00 in steps of 0.01.
+
+        The config dialog's curve preview draws these so the preview and the
+        runtime share one formula.
+
+        Args:
+            params_json: JSON object with any of ``sensitivity``,
+                ``dead_zone``, ``extremity_dead_zone`` (percent),
+                ``anti_deadzone``, ``anti_deadzone_buffer`` (fractions).
+        """
+        try:
+            params = self._params_from_json(params_json)
+            return [float(shape_magnitude(i / 100.0, **params)) for i in range(101)]
+        except Exception:
+            return [i / 100.0 for i in range(101)]
+
+    @Slot(str, float, float, str, bool, result="QVariantList")
+    def previewStick(self, widget_id: str, nx: float, ny: float, params_json: str, drive: bool) -> list:  # noqa: N802
+        """Shape a test vector with unsaved dialog settings, optionally driving the output.
+
+        Lets the user calibrate the anti-deadzone against a running game: the
+        dialog's test pad sends its deflection here, shows the numbers that
+        come back, and, when ``drive`` is set, the shaped vector also goes to
+        the widget's mapped axes. No tremor filter or modifier is applied.
+
+        Returns:
+            ``[out_x, out_y, magnitude]`` in the widget's screen orientation.
+        """
+        try:
+            params = self._params_from_json(params_json)
+            ox, oy = shape_vector(float(nx), float(ny), **params)
+            if drive:
+                w = self._widget_shaping.get(str(widget_id))
+                if w is not None:
+                    out_x = -ox if w.get("invert_x") else ox
+                    out_y = oy if w.get("invert_y") else -oy
+                    self._dispatch_stick(w, out_x, out_y)
+            return [float(ox), float(oy), float((ox * ox + oy * oy) ** 0.5)]
+        except Exception:
+            return [0.0, 0.0, 0.0]
+
+    # Legacy layouts (adaptive, xbox, flight_sim): sticks without per-widget
+    # settings, shaped with the profile's global joystick_settings.
     @Slot(float, float)
     def setLeftStick(self, x: float, y: float) -> None:  # noqa: N802
         try:
-            px = self._config.apply_sensitivity_curve(float(x), 'left', 'x')
-            py = self._config.apply_sensitivity_curve(float(y), 'left', 'y')
+            gain = 1.0
+            if self._modifiers.get("precision"):
+                gain = float(self._config.get("joystick_settings.precision_gain", DEFAULT_PRECISION_GAIN))
+            px, py = self._config.shape_stick(float(x), float(y), 'left', self.getOutputMode(), gain)
             if self._is_controller_connected():
                 # For ViGEm, use direct stick control
                 if self._use_vigem and self._vigem:
@@ -493,8 +924,10 @@ class ControllerBridge(QObject):
     @Slot(float, float)
     def setRightStick(self, x: float, y: float) -> None:  # noqa: N802
         try:
-            px = self._config.apply_sensitivity_curve(float(x), 'right', 'x')
-            py = self._config.apply_sensitivity_curve(float(y), 'right', 'y')
+            gain = 1.0
+            if self._modifiers.get("precision"):
+                gain = float(self._config.get("joystick_settings.precision_gain", DEFAULT_PRECISION_GAIN))
+            px, py = self._config.shape_stick(float(x), float(y), 'right', self.getOutputMode(), gain)
             if self._is_controller_connected():
                 # For ViGEm, use direct stick control
                 if self._use_vigem and self._vigem:
@@ -676,27 +1109,15 @@ class ControllerBridge(QObject):
     @Slot(result=bool)
     def isVigemAvailable(self) -> bool:  # noqa: N802
         """Check if ViGEm (vgamepad) is available on this system."""
-        return VIGEM_AVAILABLE
+        return self._output.vigem_available
 
     @Slot(str)
     def setOutputMode(self, mode: str) -> None:  # noqa: N802
         """Switch output device. mode is 'vjoy' or 'vigem'."""
-        mode = mode.lower().strip()
-        if mode not in ("vjoy", "vigem"):
+        if not self._output.select(mode):
             return
-        want_vigem = mode == "vigem"
-        if want_vigem == self._use_vigem:
-            return
-        if want_vigem and not VIGEM_AVAILABLE:
-            print("Cannot switch to ViGEm — vgamepad not installed")
-            return
-        # Initialize the target interface if needed
-        if want_vigem and self._vigem is None:
-            self._vigem = ViGEmInterface(self._config)
-        if not want_vigem and self._vjoy is None:
-            self._vjoy = VJoyInterface(self._config)
-        self._use_vigem = want_vigem
-        self._config.set("controller.prefer_vigem", want_vigem)
+        mode = self._output.mode
+        self._config.set("controller.prefer_vigem", self._output.use_vigem)
         self._config.save_config()
         self.outputModeChanged.emit(mode)
         self.vjoyConnectionChanged.emit(self._is_controller_connected())
@@ -906,12 +1327,10 @@ class ControllerBridge(QObject):
     @Slot(str, result=bool)
     def switchProfile(self, profile_id: str) -> bool:  # noqa: N802
         """Switch to a different profile."""
+        self._stop_spectator()
         success = self._config.switch_profile(profile_id)
         if success:
-            self.profileChanged.emit(profile_id)
-            self.layoutTypeChanged.emit(self._config.get_layout_type())
-            self._buttons_version += 1
-            self.buttonsVersionChanged.emit(self._buttons_version)
+            self._refresh_active_profile()
             # Track recently used (keep last 5, most-recent first, no duplicates)
             if profile_id in self._recent_profiles:
                 self._recent_profiles.remove(profile_id)
@@ -921,6 +1340,13 @@ class ControllerBridge(QObject):
             self._config.save_config()
             self.recentProfilesChanged.emit()
         return success
+
+    def _refresh_active_profile(self) -> None:
+        self._reload_widget_shaping()
+        self.profileChanged.emit(self._config.get_current_profile())
+        self.layoutTypeChanged.emit(self._config.get_layout_type())
+        self._buttons_version += 1
+        self.buttonsVersionChanged.emit(self._buttons_version)
 
     @Slot(result="QVariantList")
     def getRecentProfiles(self) -> list:  # noqa: N802
@@ -958,9 +1384,7 @@ class ControllerBridge(QObject):
         """Reset a profile to its default settings."""
         success = self._config.reset_profile(profile_id)
         if success and profile_id == self._config.get_current_profile():
-            # Refresh UI if we reset the current profile
-            self._buttons_version += 1
-            self.buttonsVersionChanged.emit(self._buttons_version)
+            self._refresh_active_profile()
         return success
 
     @Slot(str, str, result=str)
@@ -982,8 +1406,11 @@ class ControllerBridge(QObject):
     @Slot(str, result=bool)
     def deleteProfile(self, profile_id: str) -> bool:  # noqa: N802
         """Delete a user-created profile."""
+        previous = self._config.get_current_profile()
         success = self._config.delete_profile(profile_id)
         if success:
+            if previous != self._config.get_current_profile():
+                self._refresh_active_profile()
             self.profilesListChanged.emit()
         return success
 
@@ -1037,22 +1464,24 @@ class ControllerBridge(QObject):
     def saveCustomLayout(self, widgets_json: str, grid_snap: int, show_grid: bool) -> None:  # noqa: N802
         """Save custom layout widgets from QML (silent — no profileSaved signal)."""
         try:
-            import json
             widgets = json.loads(widgets_json)
-            self._config.save_custom_layout(widgets, int(grid_snap), bool(show_grid))
+            if self._config.save_custom_layout(widgets, int(grid_snap), bool(show_grid)):
+                self._reload_widget_shaping(widgets)
+            else:
+                self.profileSaved.emit(False)
         except Exception as e:
             print(f"Error saving custom layout: {e}")
+            self.profileSaved.emit(False)
 
     @Slot(str, str, int, bool)
     def saveCustomLayoutAs(self, name: str, widgets_json: str, grid_snap: int, show_grid: bool) -> None:  # noqa: N802
         """Save custom layout as a new profile with a custom name."""
         try:
-            import json
             import copy
             widgets = json.loads(widgets_json)
             # Duplicate current profile with new name
             profile_data = copy.deepcopy(self._config.get_current_profile_data() or {})
-            profile_id = name.lower().replace(" ", "_").replace("-", "_")
+            profile_id = self._config.profiles.unique_id(name)
             profile_data["name"] = name
             profile_data["description"] = f"Custom layout: {name}"
             profile_data["layout_type"] = "custom"
@@ -1062,9 +1491,16 @@ class ControllerBridge(QObject):
             profile_data["custom_layout"]["grid_snap"] = int(grid_snap)
             profile_data["custom_layout"]["show_grid"] = bool(show_grid)
             # Save as new profile
-            self._config.save_profile_as(profile_id, profile_data)
-            print(f"Saved custom layout as: {name} (id: {profile_id})")
-            self.profileSaved.emit(True)
+            success = self._config.save_profile_as(profile_id, profile_data)
+            if success:
+                # unique_id never overwrites, so a second "Save As" under a name
+                # that already exists lands on name_1 rather than replacing it.
+                # Say which id was used: silently writing somewhere other than
+                # where the user expected is worse than the old clobber.
+                if profile_id != name:
+                    print(f"Saved custom layout as: {name} (id: {profile_id})")
+                self.profilesListChanged.emit()
+            self.profileSaved.emit(success)
         except Exception as e:
             print(f"Error saving custom layout as '{name}': {e}")
             self.profileSaved.emit(False)
@@ -1403,6 +1839,7 @@ class ControllerBridge(QObject):
     @Slot()
     def stopControllerMode(self) -> None:  # noqa: N802
         """Stop Controller Mode Enforcement."""
+        self._stop_spectator()   # Ctrl+Alt+F12 also cancels a running primitive
         if not MOUSE_HIDER_AVAILABLE or not _mouse_hider:
             return
         try:
@@ -1458,6 +1895,11 @@ class ControllerBridge(QObject):
           1. Make game borderless (if not already)
           2. Start ClipCursor release polling (fights cursor confinement)
           3. Start Controller Mode (makes game voluntarily release mouse)
+          4. Mouse isolation (Windows with the filter driver installed: the
+             game stops seeing the physical mouse, the real cursor keeps
+             working through the cursor relay, never over the game window)
+          5. Bring the game to the foreground, so its gamepad counts and the
+             user need not click it first
         
         Args:
             game_hwnd: HWND of the game window.
@@ -1499,13 +1941,12 @@ class ControllerBridge(QObject):
         if self._vigem and self._vigem.gamepad:
             gamepad = self._vigem.gamepad
             print("[bridge] Full Game Mode: using existing ViGEm gamepad")
-        elif VIGEM_AVAILABLE:
+        elif self._output.vigem_available:
             # Create a ViGEm gamepad on demand for Game Mode
             try:
                 print("[bridge] Full Game Mode: profile doesn't use ViGEm, creating one for Game Mode...")
-                if self._vigem is None:
-                    self._vigem = ViGEmInterface(self._config)
-                if self._vigem.is_connected and self._vigem.gamepad:
+                self._output.ensure_vigem()
+                if self._vigem and self._vigem.is_connected and self._vigem.gamepad:
                     gamepad = self._vigem.gamepad
                     print("[bridge] Full Game Mode: on-demand ViGEm gamepad created!")
                 else:
@@ -1543,6 +1984,27 @@ class ControllerBridge(QObject):
         elif not gamepad:
             print("[bridge] Full Game Mode: no ViGEm gamepad — controller mode SKIPPED")
         
+        # Step 3: take the physical mouse away from the game entirely (kernel
+        # filter + cursor relay). Independent of controller mode: the hook in
+        # mouse_hider still covers games that read the cursor position.
+        if MOUSE_ISOLATION_AVAILABLE and bool(self._config.get("controller.game_mode_isolate_mouse", True)):
+            self._iso_game_hwnd = int(game_hwnd)
+            if self._start_isolation():
+                success = True
+                print("[bridge] Full Game Mode: mouse isolation STARTED (cursor relay)")
+            else:
+                print("[bridge] Full Game Mode: mouse isolation unavailable, continuing without it")
+
+        # The game must hold the foreground for its gamepad to count and for
+        # Raw Input to be its own; do it here so the user need not click the
+        # game first. Nimbus itself is WS_EX_NOACTIVATE from step 0.
+        if success and WINDOW_UTILS_AVAILABLE and game_hwnd:
+            try:
+                if set_foreground_window(int(game_hwnd)):
+                    print("[bridge] Full Game Mode: game brought to the foreground")
+            except Exception:
+                pass
+
         if success:
             print("[bridge] Full Game Mode ACTIVE")
         else:
@@ -1557,6 +2019,10 @@ class ControllerBridge(QObject):
         Reverses startFullGameMode: stops controller mode, cursor release,
         and restores the game window.
         """
+        # Give the physical mouse back first
+        if MOUSE_ISOLATION_AVAILABLE:
+            self.stopMouseIsolation()
+        self._iso_game_hwnd = 0
         # Stop controller mode
         if MOUSE_HIDER_AVAILABLE and _mouse_hider:
             try:
@@ -1599,12 +2065,214 @@ class ControllerBridge(QObject):
         
         print("[bridge] Full Game Mode stopped")
 
+    # =================================================================
+    # Mouse isolation: the physical mouse is taken away from the game.
+    # Windows: Nimbus Mouse Filter driver + cursor relay (the real cursor keeps
+    # working, policed per point so it never wanders over the game). The
+    # Linux branch uses the same names with an evdev grab and a software cursor.
+    # =================================================================
+
+    def _get_iso_active(self) -> bool:
+        return bool(self._iso_active)
+
+    mouseIsolationActive = Property(bool, _get_iso_active, notify=mouseIsolationChanged)
+
+    @Slot(result=bool)
+    def isMouseIsolationAvailable(self) -> bool:  # noqa: N802
+        """True when the isolation driver is installed and attached to a mouse."""
+        if not MOUSE_ISOLATION_AVAILABLE or not _mouse_isolation:
+            return False
+        try:
+            return bool(_mouse_isolation.list_pointer_devices())
+        except Exception:
+            return False
+
+    @Slot(result=bool)
+    def isMouseIsolationActive(self) -> bool:  # noqa: N802
+        return bool(self._iso_active)
+
+    @Slot(result=bool)
+    def startMouseIsolation(self) -> bool:  # noqa: N802
+        """Take the physical mouse away from every other application.
+
+        On Windows the real cursor keeps working (cursor relay) and the game,
+        which keeps the foreground, receives no mouse input at all.
+        ``Ctrl+Alt+F12``, :meth:`stopMouseIsolation`, closing Nimbus, or the
+        driver's watchdog give it back.
+        """
+        return self._start_isolation()
+
+    def _start_isolation(self) -> bool:
+        if not MOUSE_ISOLATION_AVAILABLE or not _mouse_isolation:
+            print("[bridge] mouse isolation: driver not available")
+            return False
+        if self._iso_active:
+            return True
+        if self._window is None:
+            print("[bridge] mouse isolation: window not set yet")
+            return False
+        try:
+            self._iso_nimbus_hwnd = int(self._window.winId())
+        except Exception:
+            self._iso_nimbus_hwnd = 0
+        relay = self._iso_relay
+        iso = _mouse_isolation.MouseIsolation(
+            on_motion=lambda dx, dy: relay.motion.emit(int(dx), int(dy)),
+            on_button=lambda code, pressed: relay.button.emit(int(code), bool(pressed)),
+            on_wheel=lambda h, v: relay.wheel.emit(int(h), int(v)),
+            on_stopped=lambda reason: relay.stopped.emit(str(reason)),
+            hotkey=True,
+            cursor_relay=self._iso_relay_allowed,
+        )
+        try:
+            iso.start()
+        except Exception as exc:
+            print(f"[bridge] mouse isolation failed: {exc}")
+            return False
+        self._iso = iso
+        self._iso_active = True
+        self._iso_buttons = Qt.MouseButton.NoButton
+        self._iso_last_press = None
+        self._iso_park_cursor_if_stuck()
+        self.mouseIsolationChanged.emit(True)
+        return True
+
+    def _iso_park_cursor_if_stuck(self) -> bool:
+        """Move the real cursor onto Nimbus if it sits on the game and not on us.
+
+        The relay policy never moves the cursor deeper into the game window,
+        so a cursor that is already there (the game was clicked, or a window
+        moved under it) could not leave. Parking it on Nimbus's centre gives
+        the user a cursor that works again. Safe from any thread.
+        """
+        game, nimbus = self._iso_game_hwnd, self._iso_nimbus_hwnd
+        if not (game and nimbus) or not _mouse_isolation:
+            return False
+        x, y = _mouse_isolation.cursor_position()
+        if _mouse_isolation.point_in_window(game, x, y) and not _mouse_isolation.point_in_window(nimbus, x, y):
+            cx, cy = _mouse_isolation.window_center(nimbus)
+            return bool(cx or cy) and _mouse_isolation.set_cursor_position(cx, cy)
+        return False
+
+    @Slot()
+    def stopMouseIsolation(self) -> None:  # noqa: N802
+        """Give the physical mouse back (no-op when inactive)."""
+        iso = self._iso
+        if iso is not None and iso.active:
+            iso.stop("requested")
+        elif self._iso_active:
+            self._on_iso_stopped("requested")
+
+    def _iso_relay_allowed(self, x: int, y: int) -> bool:
+        """Cursor-relay policy, asked on the reader thread for every packet.
+
+        The real cursor may go anywhere except over the game window, unless
+        that spot is also covered by Nimbus (the overlay sits on the game).
+        Same rule as the ``WH_MOUSE_LL`` hook in :mod:`mouse_hider`, applied
+        before the cursor moves instead of after, so games that read the
+        cursor position see nothing either.
+        """
+        game = self._iso_game_hwnd
+        if game and _mouse_isolation.point_in_window(game, x, y):
+            nimbus = self._iso_nimbus_hwnd
+            if nimbus and _mouse_isolation.point_in_window(nimbus, x, y):
+                return True
+            # Refused. If the cursor is already sitting on the game, park it
+            # on Nimbus instead of leaving it stuck there.
+            self._iso_park_cursor_if_stuck()
+            return False
+        return True
+
+    def _iso_cursor_over_nimbus(self) -> bool:
+        return bool(self._iso_nimbus_hwnd) and _mouse_isolation.hwnd_at_cursor() == self._iso_nimbus_hwnd
+
+    def _iso_send_mouse(self, ev_type, button) -> None:
+        """Deliver a synthetic mouse event to our window at the real cursor position."""
+        if self._window is None:
+            return
+        global_pos = QCursor.pos()
+        local = QPointF(self._window.mapFromGlobal(global_pos))
+        ev = QMouseEvent(ev_type, local, local, QPointF(global_pos), button, self._iso_buttons,
+                         Qt.KeyboardModifier.NoModifier)
+        QCoreApplication.sendEvent(self._window, ev)
+
+    @Slot(int, int)
+    def _on_iso_motion(self, dx: int, dy: int) -> None:
+        # The relay already moved the real cursor on the reader thread, and Qt
+        # receives the ordinary hover moves for it. Only a synthetic button
+        # that is still held needs move events, so the pressed widget keeps
+        # dragging.
+        if self._iso_active and self._iso_buttons != Qt.MouseButton.NoButton:
+            self._iso_send_mouse(QEvent.Type.MouseMove, Qt.MouseButton.NoButton)
+
+    @Slot(int, bool)
+    def _on_iso_button(self, code: int, pressed: bool) -> None:
+        if not self._iso_active:
+            return
+        button = _ISO_BUTTON_MAP.get(int(code))
+        # Over our own window the click is synthesised into Qt: nothing is
+        # injected, so the game sees no button either. Anywhere else it is
+        # replayed into Windows (the desktop, or the game's own menus), which
+        # a foreground Raw Input game does see as a button, never as motion.
+        if button is None:
+            synthesize = False
+        elif pressed:
+            synthesize = self._iso_cursor_over_nimbus()
+        else:
+            synthesize = bool(self._iso_buttons & button)   # release goes where the press went
+        if not synthesize:
+            _mouse_isolation.inject_button(int(code), bool(pressed))
+            return
+        if pressed:
+            now = time.monotonic()
+            interval = QGuiApplication.styleHints().mouseDoubleClickInterval() / 1000.0
+            pos = QCursor.pos()
+            last = self._iso_last_press
+            is_double = (last is not None and last[1] == button and now - last[0] <= interval
+                         and abs(last[2] - pos.x()) < 6 and abs(last[3] - pos.y()) < 6)
+            self._iso_buttons |= button
+            self._iso_last_press = None if is_double else (now, button, pos.x(), pos.y())
+            self._iso_send_mouse(QEvent.Type.MouseButtonDblClick if is_double else QEvent.Type.MouseButtonPress,
+                                 button)
+        else:
+            self._iso_buttons &= ~button
+            self._iso_send_mouse(QEvent.Type.MouseButtonRelease, button)
+
+    @Slot(int, int)
+    def _on_iso_wheel(self, horizontal: int, vertical: int) -> None:
+        if not self._iso_active or self._window is None:
+            return
+        if not self._iso_cursor_over_nimbus():
+            _mouse_isolation.inject_wheel(int(horizontal), int(vertical))
+            return
+        global_pos = QCursor.pos()
+        local = QPointF(self._window.mapFromGlobal(global_pos))
+        ev = QWheelEvent(local, QPointF(global_pos), QPoint(0, 0),
+                         QPoint(int(horizontal) * 120, int(vertical) * 120),
+                         self._iso_buttons, Qt.KeyboardModifier.NoModifier,
+                         Qt.ScrollPhase.NoScrollPhase, False)
+        QCoreApplication.sendEvent(self._window, ev)
+
+    @Slot(str)
+    def _on_iso_stopped(self, reason: str) -> None:
+        if not self._iso_active:
+            return
+        # Release any synthetic button still held so widgets do not stick
+        for _code, button in _ISO_BUTTON_MAP.items():
+            if self._iso_buttons & button:
+                self._iso_buttons &= ~button
+                self._iso_send_mouse(QEvent.Type.MouseButtonRelease, button)
+        self._iso_active = False
+        self._iso = None
+        print(f"[bridge] mouse isolation stopped ({reason})")
+        self.mouseIsolationChanged.emit(False)
+
     @Slot(result="QVariantMap")
     def getGameModeDiagnostics(self) -> dict:  # noqa: N802
         """Return diagnostic info about Game Mode readiness for the UI."""
         import sys as _sys
         result = {
-            "vigem_package": VIGEM_AVAILABLE,
+            "vigem_package": self._output.vigem_available,
             "vigem_gamepad": bool(self._vigem and self._vigem.gamepad),
             "vigem_connected": bool(self._vigem and self._vigem.is_connected),
             "mouse_hider": MOUSE_HIDER_AVAILABLE,
@@ -1613,6 +2281,8 @@ class ControllerBridge(QObject):
             "profile": str(self._config.get_layout_type()),
             "use_vigem": self._use_vigem,
             "controller_mode_active": self._controller_mode_active,
+            "mouse_isolation": MOUSE_ISOLATION_AVAILABLE,
+            "mouse_isolation_active": self._iso_active,
             "driver_installed": False,
         }
         # Check if ViGEmBus driver is installed on Windows
@@ -1636,96 +2306,126 @@ class ControllerBridge(QObject):
 
     # ---- Account ----
 
+    @Slot()
+    def _notify_account(self) -> None:
+        self.accountStateChanged.emit()
+
+    @Slot(bool)
+    def _on_sync_completed(self, success: bool) -> None:
+        if success:
+            self.profilesListChanged.emit()
+        self.syncCompleted.emit(success)
+
+    @Slot(str)
+    def _on_remote_profile_updated(self, profile_id: str) -> None:
+        if profile_id == self._config.get_current_profile():
+            if self._config.switch_profile(profile_id):
+                self._refresh_active_profile()
+        self.profilesListChanged.emit()
+
+    @Property(bool, notify=accountStateChanged)
+    def accountAuthenticated(self) -> bool:
+        return bool(self._services and self._services.cloud.is_authenticated)
+
+    @Property(str, notify=accountStateChanged)
+    def accountDisplayName(self) -> str:
+        return self._services.cloud.display_name if self._services else "Not signed in"
+
+    @Property(str, notify=accountStateChanged)
+    def accountEmail(self) -> str:
+        user = self._services.cloud.user if self._services else None
+        return (user or {}).get("email", "")
+
+    @Property(str, notify=accountStateChanged)
+    def accountTier(self) -> str:
+        return self._services.cloud.tier if self._services else "free"
+
+    @Property(bool, notify=accountStateChanged)
+    def accountPremium(self) -> bool:
+        return bool(self._services and self._services.cloud.is_premium)
+
     @Slot(str, str, result=bool)
     def loginWithEmail(self, email: str, password: str) -> bool:  # noqa: N802
         """Sign in with email and password.  Returns True on success."""
-        try:
-            from .cloud_client import CloudClient
-            cloud: CloudClient = self.parent().findChild(CloudClient)
-            if cloud:
-                return cloud.login_with_email(email, password)
-        except Exception:
-            pass
-        return False
+        return bool(self._services and self._services.cloud.login_with_email(email, password))
+
+    @Slot(str, str, result=bool)
+    def signupWithEmail(self, email: str, password: str) -> bool:  # noqa: N802
+        """Create an account through the injected cloud service."""
+        return bool(self._services and self._services.cloud.signup_with_email(email, password))
+
+    @Slot(result=bool)
+    def syncProfiles(self) -> bool:  # noqa: N802
+        """Synchronize profiles through the injected cloud service."""
+        return bool(self._services and self._services.cloud.sync_profiles())
 
     @Slot(str)
     def loginWithProvider(self, provider: str) -> None:  # noqa: N802
         """Open the system browser for OAuth login (google / facebook)."""
-        try:
-            from .cloud_client import CloudClient
-            cloud: CloudClient = self.parent().findChild(CloudClient)
-            if cloud:
-                cloud.login_with_browser(provider)
-        except Exception:
-            pass
+        if self._services:
+            self._services.cloud.login_with_browser(provider)
 
     @Slot()
     def logoutAccount(self) -> None:  # noqa: N802
         """Sign out and clear all stored tokens."""
-        try:
-            from .cloud_client import CloudClient
-            cloud: CloudClient = self.parent().findChild(CloudClient)
-            if cloud:
-                cloud.logout()
-        except Exception:
-            pass
+        if self._services:
+            self._services.cloud.logout()
 
     # ---- Telemetry ----
 
     @Slot(bool)
     def setAnalyticsEnabled(self, enabled: bool) -> None:  # noqa: N802
         """Toggle anonymous usage analytics on or off."""
-        self._config.set("telemetry.analytics_enabled", enabled)
-        self._config.save_config()
+        if self._services:
+            self._services.telemetry.analytics_enabled = enabled
+        else:
+            self._config.set("telemetry.analytics_enabled", enabled)
+            self._config.save_config()
+        self.privacyChanged.emit()
 
     @Slot(bool)
     def setCrashReportsEnabled(self, enabled: bool) -> None:  # noqa: N802
         """Toggle crash report collection on or off."""
-        self._config.set("telemetry.crash_reports_enabled", enabled)
-        self._config.save_config()
+        if self._services:
+            self._services.telemetry.crash_reports_enabled = enabled
+        else:
+            self._config.set("telemetry.crash_reports_enabled", enabled)
+            self._config.save_config()
+        self.privacyChanged.emit()
 
     @Slot(result=bool)
     def isAnalyticsEnabled(self) -> bool:  # noqa: N802
         """Return whether usage analytics is currently enabled."""
+        if self._services:
+            return self._services.telemetry.analytics_enabled
         return bool(self._config.get("telemetry.analytics_enabled", False))
 
     @Slot(result=bool)
     def isCrashReportsEnabled(self) -> bool:  # noqa: N802
         """Return whether crash reporting is currently enabled."""
+        if self._services:
+            return self._services.telemetry.crash_reports_enabled
         return bool(self._config.get("telemetry.crash_reports_enabled", False))
+
+    analyticsEnabled = Property(bool, isAnalyticsEnabled, notify=privacyChanged)
+    crashReportsEnabled = Property(bool, isCrashReportsEnabled, notify=privacyChanged)
 
     # ---- Updater ----
 
     @Slot()
     def checkForUpdates(self) -> None:  # noqa: N802
         """Manually trigger an update check."""
-        try:
-            from .updater import UpdateChecker
-            checker: UpdateChecker = self.parent().findChild(UpdateChecker)
-            if checker:
-                checker.check()
-        except Exception:
-            pass
+        if self._services:
+            self._services.updater.check()
 
     @Slot()
     def openDownloadPage(self) -> None:  # noqa: N802
         """Open the download page for the latest version."""
-        try:
-            from .updater import UpdateChecker
-            checker: UpdateChecker = self.parent().findChild(UpdateChecker)
-            if checker:
-                checker.open_download_page()
-        except Exception:
-            import webbrowser
-            webbrowser.open("https://github.com/owenpkent/Nimbus-Adaptive-Controller/releases/latest")
+        if self._services:
+            self._services.updater.open_download_page()
 
     @Slot()
     def dismissUpdate(self) -> None:  # noqa: N802
         """Dismiss the current update notification."""
-        try:
-            from .updater import UpdateChecker
-            checker: UpdateChecker = self.parent().findChild(UpdateChecker)
-            if checker:
-                checker.dismiss()
-        except Exception:
-            pass
+        if self._services:
+            self._services.updater.dismiss()

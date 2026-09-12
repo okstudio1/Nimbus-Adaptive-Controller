@@ -531,8 +531,15 @@ class MainWindow(QMainWindow):
 
     # ----- Input handlers -----
     def _apply_joystick_curve(self, x: float, y: float, which: str) -> tuple[float, float]:
-        px = self.config.apply_sensitivity_curve(x, which, 'x')
-        py = self.config.apply_sensitivity_curve(y, which, 'y')
+        # shape_stick replaced the removed per-axis apply_sensitivity_curve: one
+        # radial pass over the vector rather than two independent ones. The
+        # per-joystick inversion keys this shell used to get from that method
+        # are applied here, since shape_stick only shapes.
+        px, py = self.config.shape_stick(x, y, which)
+        if self.config.get(f"joysticks.{which}.invert_x", False):
+            px = -px
+        if self.config.get(f"joysticks.{which}.invert_y", False):
+            py = -py
         return px, py
 
     def _on_left_stick(self, x: float, y: float) -> None:
@@ -561,8 +568,8 @@ class MainWindow(QMainWindow):
             self.vjoy.update_axis(throttle_axis, value)
 
     def _on_rudder(self, value: float) -> None:
-        # For now, apply same sensitivity approach as joysticks on X (optional to add dedicated curve later)
-        processed = self.config.apply_sensitivity_curve(value, 'right', 'x')
+        # The rudder has its own settings block (rudder_settings).
+        processed = self.config.apply_rudder_sensitivity_curve(value)
         rudder_axis = self.config.get("axis_mapping.rudder", "rz")
         if self.vjoy.is_connected and rudder_axis != "none":
             self.vjoy.update_axis(rudder_axis, processed)

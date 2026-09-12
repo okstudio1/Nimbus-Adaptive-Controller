@@ -119,6 +119,8 @@ class CloudClient(QObject):
         Emitted with the user's display name or email when auth state changes.
     syncCompleted(bool)
         Emitted after a profile sync attempt.  ``True`` = success.
+    profileUpdated(str)
+        Emitted after a remote profile is persisted, including partial syncs.
     entitlementChanged(str)
         Emitted when the user's tier changes (e.g. ``"free"``, ``"nimbus_plus"``).
 
@@ -132,6 +134,7 @@ class CloudClient(QObject):
     authStateChanged = Signal(bool)
     userChanged = Signal(str)
     syncCompleted = Signal(bool)
+    profileUpdated = Signal(str)
     entitlementChanged = Signal(str)
 
     def __init__(self, config: Any, parent: Optional[QObject] = None) -> None:
@@ -156,6 +159,10 @@ class CloudClient(QObject):
     # ------------------------------------------------------------------
     # Properties (exposed to QML via bridge)
     # ------------------------------------------------------------------
+
+    def shutdown(self) -> None:
+        """Stop session refresh without changing stored credentials."""
+        self._refresh_timer.stop()
 
     @property
     def is_authenticated(self) -> bool:
@@ -748,39 +755,66 @@ class CloudClient(QObject):
         - If no local counterpart exists, pull from remote.
         - If no remote counterpart exists, push to remote.
         """
-        profiles_dir = self._config._user_profiles_dir
-        if not profiles_dir.exists():
-            return
+        repository = self._config.profiles
+        # The directory is created during ControllerConfig startup, so a missing
+        # one means something is genuinely wrong with user storage. Creating it
+        # here keeps a first sync from failing over an empty profile set, and a
+        # directory that still cannot be made is a real error.
+        try:
+            repository.directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise OSError("Profile directory is unavailable") from exc
 
         remote_by_id = {p["profile_id"]: p for p in remote_profiles}
+        # Every profile is attempted, and the failures are collected rather than
+        # thrown at the first one. Raising mid-loop abandoned the remaining
+        # pulls and pushes, so one unreadable file left the set half synced and
+        # reported the whole run as a clean failure.
+        failures: List[str] = []
 
         # Pull newer remote profiles
         for pid, rp in remote_by_id.items():
-            local_path = profiles_dir / f"{pid}.json"
             remote_updated = rp.get("updated_at", "")
+            modified_at = repository.modified_at(pid)
 
-            if local_path.exists():
+            if modified_at is not None:
                 local_mtime = datetime.fromtimestamp(
-                    local_path.stat().st_mtime, tz=timezone.utc
+                    modified_at, tz=timezone.utc
                 ).isoformat()
                 if remote_updated > local_mtime:
                     # Remote is newer — pull
-                    local_path.write_text(json.dumps(rp["data"], indent=2), "utf-8")
-                    logger.debug("Pulled profile %s (remote newer).", pid)
+                    if repository.save(pid, rp["data"]):
+                        self.profileUpdated.emit(pid)
+                        logger.debug("Pulled profile %s (remote newer).", pid)
+                    else:
+                        failures.append(f"could not save remote profile {pid}")
                 elif local_mtime > remote_updated:
                     # Local is newer — push
-                    local_data = json.loads(local_path.read_text("utf-8"))
-                    self.upsert_profile(pid, local_data)
-                    logger.debug("Pushed profile %s (local newer).", pid)
+                    local_data = repository.load(pid)
+                    if local_data is None:
+                        failures.append(f"could not read local profile {pid}")
+                    elif not self.upsert_profile(pid, local_data):
+                        failures.append(f"upload failed for profile {pid}")
+                    else:
+                        logger.debug("Pushed profile %s (local newer).", pid)
             else:
                 # No local copy — pull
-                local_path.write_text(json.dumps(rp["data"], indent=2), "utf-8")
-                logger.debug("Pulled new profile %s from cloud.", pid)
+                if repository.save(pid, rp["data"]):
+                    self.profileUpdated.emit(pid)
+                    logger.debug("Pulled new profile %s from cloud.", pid)
+                else:
+                    failures.append(f"could not save remote profile {pid}")
 
         # Push local-only profiles
-        for profile_file in profiles_dir.glob("*.json"):
-            pid = profile_file.stem
+        for profile in repository.list_profiles():
+            pid = profile["id"]
             if pid not in remote_by_id:
-                local_data = json.loads(profile_file.read_text("utf-8"))
-                self.upsert_profile(pid, local_data)
-                logger.debug("Pushed local-only profile %s to cloud.", pid)
+                local_data = repository.load(pid)
+                if local_data is None:
+                    failures.append(f"could not read local profile {pid}")
+                elif not self.upsert_profile(pid, local_data):
+                    failures.append(f"upload failed for profile {pid}")
+                else:
+                    logger.debug("Pushed local-only profile %s to cloud.", pid)
+        if failures:
+            raise RuntimeError("Profile sync incomplete: " + "; ".join(failures))

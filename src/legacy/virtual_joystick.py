@@ -151,9 +151,15 @@ class VirtualJoystick:
     
     def _apply_processing(self) -> None:
         """Apply sensitivity curves, dead zones, and smoothing."""
-        # Apply sensitivity curves
-        processed_x = self.config.apply_sensitivity_curve(self.raw_x, self.joystick_id, "x")
-        processed_y = self.config.apply_sensitivity_curve(self.raw_y, self.joystick_id, "y")
+        # Apply sensitivity curves. shape_stick replaced the removed per-axis
+        # apply_sensitivity_curve: one radial pass over the vector rather than
+        # two independent ones, so the dead region is a circle. The inversion
+        # keys that method used to apply are handled here.
+        processed_x, processed_y = self.config.shape_stick(self.raw_x, self.raw_y, self.joystick_id)
+        if self.config.get(f"joysticks.{self.joystick_id}.invert_x", False):
+            processed_x = -processed_x
+        if self.config.get(f"joysticks.{self.joystick_id}.invert_y", False):
+            processed_y = -processed_y
         
         # Apply smoothing if enabled
         if self.config.get("safety.enable_smoothing", True):

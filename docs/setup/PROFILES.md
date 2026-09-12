@@ -152,19 +152,26 @@ Each widget in a custom layout profile stores:
 - `auto_center` — auto-return to center when locked and idle
 - `auto_center_delay` — delay before return (1-10ms)
 - `lock_sensitivity` — FPS-style delta multiplier (1-10, actual = value × 2)
-- `tremor_filter` — EMA smoothing for jittery input (0-10)
-- `sensitivity`, `dead_zone`, `extremity_dead_zone` — axis response curve
+- `tremor_filter` — EMA smoothing for jittery input (0-10), applied in the bridge on the drag path and the lock path
+- `travel_px`: mouse pixels from the press point to full deflection; 0 or absent follows the drawn radius (81 px for a 200 px stick)
+- `precision_gain`: fraction of the stick's range left while a Precision aim button is held (default 0.25)
+- `sensitivity`, `dead_zone`, `extremity_dead_zone` — axis response curve, applied radially to the vector's magnitude so the dead region is a circle
+- `anti_deadzone`, `anti_deadzone_buffer`: output floor as fractions of the range. Absent means the documented XInput constant for the mapped stick (0.24 left, 0.265 right) when the output is ViGEm and 0 under vJoy; the buffer (default 0.02) only counts above a non-zero floor
+
+All shaping runs in the bridge (`src/bridge.py`), which reads these by widget id; the QML sends raw geometry.
 
 ### Button-Specific
 - `button_id` — vJoy button number (1-128)
 - `color`, `shape` — visual appearance
 - `toggle_mode` — toggle vs momentary
+- `modifier`: `"none"` (default) sends the gamepad button; `"precision"` holds the precision aim modifier instead, momentary or latched by `toggle_mode`
 
 ### Slider-Specific
 - `mapping.axis` — single vJoy axis
 - `snap_mode` — "none" (hold), "left" (return to zero), "center" (spring to center)
 - `click_mode` — "jump" (teleport) or "relative" (drag)
 - `orientation` — "horizontal" or "vertical"
+- `sensitivity`, `dead_zone`, `extremity_dead_zone`, `anti_deadzone`, `anti_deadzone_buffer`: as for joysticks, except the extremity cap defaults to 0. Hold and return-to-zero sliders are shaped from their bottom end (deadzone at 0, cap at full); centre-sprung sliders and wheels are shaped around the centre
 
 ### D-Pad-Specific
 - `mapping.up`, `mapping.down`, `mapping.left`, `mapping.right` — vJoy button IDs

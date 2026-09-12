@@ -1,0 +1,86 @@
+{
+    "name": "left4dead2",
+    "title": "Left 4 Dead 2",
+    "process": "left4dead2.exe",
+    "steam_exe": "C:\\Program Files (x86)\\Steam\\steam.exe",
+    "steam_app_id": 550,
+    "game_dir": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Left 4 Dead 2",
+    "launch_args": [
+        "-novid",
+        "-windowed",
+        "-noborder",
+        "-w",
+        "1280",
+        "-h",
+        "720",
+        "-condebug",
+        "+sv_cheats",
+        "1",
+        "+map",
+        "c1m2_streets",
+        "+exec",
+        "nimbus_harness"
+    ],
+    "window_timeout_s": 300,
+    "ready_timeout_s": 240,
+    "turn_right_sign": -1,
+    "oracle": {
+        "type": "source_console",
+        "mod_dir": "left4dead2",
+        "cfg_name": "nimbus_harness",
+        "base_cfg": "360controller",
+        "pose_command": "getpos_exact",
+        "pose_key": "F7",
+        "reset_key": "F8",
+        "button_echo": {
+            "L_SHOULDER": "NIMBUS_BUTTON_LB"
+        }
+    },
+    "reset_pose": {
+        "pos": [
+            2398.882,
+            5112.257,
+            448.031
+        ],
+        "ang": [
+            0.0,
+            135.0,
+            0.0
+        ]
+    },
+    "notes": "No anti-cheat, so it starts under test signing. Source engine: the harness reads the player's origin and view angles through -condebug and a bound key (getpos_exact prints 'setpos_exact x y z;setang_exact p y r'), and teleports it back with setpos_exact/setang for each reset. The map starts in the first safe room; the spawn pose differs per launch, so reset_pose is a recorded one, turned by --survey-walk to face the clearest run (yaw 135 gives 200 units in a second; yaw 270 hits a wall at 114). The server-side player has a pose while the client still shows the loading screen, and the spawn moves it about 65 units when loading ends, which is why readiness also needs a live picture and a still pose. The pad must exist before the game starts (Source decides at launch whether an XInput controller is present). Source yaw increases turning left and 360controller.cfg sets joy_yawsensitivity -1.5, so stick right is a negative yaw delta (turn_right_sign); the same cfg turns on stick acceleration at full deflection, where a second of stick is 460 to 480 degrees, so the harness reads the pose through the hold to unwrap it. The harness cfg execs 360controller (which begins with unbindall) and then binds F7 to the pose command, F8 to the reset cfg, and the left bumper to an echo marker; F9 and F10 are avoided because F10 is a system key on Windows. Survivor bots walk through the view, so frame differencing over-reports motion here; trust the console.",
+    "expect": {
+        "G5": {
+            "0.40": {
+                "deg_per_s": -13.792,
+                "tol_pct": 15.0,
+                "tol_abs": 1.0
+            },
+            "0.60": {
+                "deg_per_s": -34.197,
+                "tol_pct": 15.0,
+                "tol_abs": 1.0
+            }
+        },
+        "G7": {
+            "deg_per_s": -21.272,
+            "tol_pct": 15.0,
+            "tol_abs": 1.0
+        },
+        "G8": {
+            "units_per_s": 199.726,
+            "tol_pct": 20.0,
+            "tol_abs": 10.0
+        },
+        "N5": {
+            "units_per_s": 200.892,
+            "tol_pct": 20.0,
+            "tol_abs": 10.0
+        },
+        "N2": {
+            "deg_per_s": -2.371,
+            "tol_pct": 15.0,
+            "tol_abs": 1.0
+        }
+    }
+}

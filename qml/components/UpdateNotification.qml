@@ -1,5 +1,5 @@
 import QtQuick
-import QtQuick.Controls
+import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
 /*
@@ -9,7 +9,7 @@ import QtQuick.Layouts
  * available.  The user can click to download or dismiss.
  *
  * Exposed context properties used:
- *   - updater  (UpdateChecker)  — from qt_qml_app.py
+ *   - controller (ControllerBridge)
  */
 
 Rectangle {
@@ -66,7 +66,7 @@ Rectangle {
             text: "Download"
             Layout.preferredWidth: 80
             Layout.preferredHeight: 26
-            onClicked: updater.open_download_page()
+            onClicked: controller.openDownloadPage()
             background: Rectangle {
                 color: parent.hovered ? "#3a8eef" : "#4a9eff"
                 radius: 4
@@ -85,7 +85,7 @@ Rectangle {
             Layout.preferredWidth: 26
             Layout.preferredHeight: 26
             onClicked: {
-                updater.dismiss()
+                controller.dismissUpdate()
                 updateRibbon.visible = false
             }
             background: Rectangle {
@@ -102,7 +102,7 @@ Rectangle {
 
     // Connect to updater signals
     Connections {
-        target: updater
+        target: controller
 
         function onUpdateAvailable(version, url, notes) {
             updateRibbon.latestVersion = version

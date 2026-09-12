@@ -10,9 +10,9 @@ Context properties exposed to QML
 ---------------------------------
 * ``controller`` — :class:`~src.bridge.ControllerBridge`
 * ``config`` — :class:`~src.config.ControllerConfig`
-* ``telemetry`` — :class:`~src.telemetry.TelemetryClient`
-* ``cloud`` — :class:`~src.cloud_client.CloudClient`
-* ``updater`` — :class:`~src.updater.UpdateChecker`
+
+Application services are owned by ``ApplicationServices`` and accessed from
+QML through ``ControllerBridge`` rather than separate context objects.
 
 Run with ``python -m src.qt_qml_app`` or via ``run.py`` / ``run.bat``.
 """
@@ -29,9 +29,7 @@ from PySide6.QtWidgets import QApplication, QSplashScreen
 
 from .bridge import ControllerBridge
 from .config import ControllerConfig
-from .telemetry import TelemetryClient
-from .cloud_client import CloudClient
-from .updater import UpdateChecker
+from .application_services import ApplicationServices
 from . import __version__
 
 
@@ -107,7 +105,7 @@ def main() -> int:
         The Qt event loop exit code (``0`` on clean shutdown, non-zero on
         QML load failure).
     """
-    app = QApplication(sys.argv)
+    app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("Nimbus Adaptive Controller")
 
     # Resolve project root
@@ -128,56 +126,28 @@ def main() -> int:
     if splash:
         splash.showMessage("  Initializing controllers...", Qt.AlignBottom | Qt.AlignLeft, QColor(120, 120, 120))
         app.processEvents()
-    bridge = ControllerBridge(config)
+    services = ApplicationServices(config, app)
+    try:
+        bridge = ControllerBridge(config, app, services=services)
+        if splash:
+            splash.showMessage("  Loading interface...", Qt.AlignBottom | Qt.AlignLeft, QColor(120, 120, 120))
+            app.processEvents()
 
-    # Telemetry (opt-in analytics + crash reporting)
-    if splash:
-        splash.showMessage("  Starting telemetry...", Qt.AlignBottom | Qt.AlignLeft, QColor(120, 120, 120))
-        app.processEvents()
-    telemetry = TelemetryClient(config)
-
-    # Cloud client (user accounts, profile sync)
-    cloud = CloudClient(config)
-
-    # Auto-updater (lightweight version check)
-    updater = UpdateChecker(config)
-
-    if splash:
-        splash.showMessage("  Loading interface...", Qt.AlignBottom | Qt.AlignLeft, QColor(120, 120, 120))
-        app.processEvents()
-
-    engine = QQmlApplicationEngine()
-    # Expose bridge, config, and new services to QML
-    engine.rootContext().setContextProperty("controller", bridge)
-    engine.rootContext().setContextProperty("config", config)
-    engine.rootContext().setContextProperty("telemetry", telemetry)
-    engine.rootContext().setContextProperty("cloud", cloud)
-    engine.rootContext().setContextProperty("updater", updater)
-
-    # Load QML
-    main_qml = qml_path()
-    engine.load(QUrl.fromLocalFile(str(main_qml)))
-
-    if not engine.rootObjects():
+        engine = QQmlApplicationEngine()
+        engine.rootContext().setContextProperty("controller", bridge)
+        engine.rootContext().setContextProperty("config", config)
+        main_qml = qml_path()
+        engine.load(QUrl.fromLocalFile(str(main_qml)))
+        if not engine.rootObjects():
+            return 1   # the finally below closes the splash
+        vjoy_ok = bridge._vjoy.is_connected if bridge._vjoy else False
+        vigem_ok = bridge._vigem.is_connected if bridge._vigem else False
+        services.telemetry.track_session_start(__version__, bridge.getOutputMode(), vjoy_ok, vigem_ok)
+        return app.exec()
+    finally:
+        services.shutdown()
         if splash:
             splash.close()
-        return 1
-
-    # Close splash once main window is ready
-    if splash:
-        splash.close()
-
-    # Track session start
-    vjoy_ok = bridge._vjoy.is_connected if bridge._vjoy else False
-    vigem_ok = bridge._vigem.is_connected if bridge._vigem else False
-    output_mode = "vigem" if bridge._use_vigem else "vjoy"
-    telemetry.track_session_start(__version__, output_mode, vjoy_ok, vigem_ok)
-
-    exit_code = app.exec()
-
-    # Graceful shutdown
-    telemetry.shutdown()
-    return exit_code
 
 
 if __name__ == "__main__":
