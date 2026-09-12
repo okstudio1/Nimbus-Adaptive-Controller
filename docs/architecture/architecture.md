@@ -190,11 +190,19 @@ Wrapper around the vJoy driver (via `pyvjoy`):
 
 ### `ViGEmInterface` (`src/vigem_interface.py`)
 
-Xbox 360 controller emulation via ViGEm/vgamepad:
+Xbox 360 controller emulation via ViGEmBus, through the pure-Python bus client in `src/padbus_client.py` (no client package or DLL):
 - **2 analog sticks** (left/right), **2 triggers** (LT/RT), **14 buttons**
 - Compatible API with VJoyInterface: `update_axis()`, `set_button()`
 - Auto-selected for `xbox`, `adaptive`, and `custom` layout types when available
 - Provides XInput compatibility for games like No Man's Sky
+
+### `X360Pad` (`src/padbus_client.py`)
+
+The virtual pad itself, a pure-ctypes client for the ViGEmBus protocol (no client package, no DLL):
+- Finds the bus device interface with cfgmgr32, opens it overlapped, and drives it with the bus's buffered IOCTLs (plug, wait ready, submit report, unplug)
+- Keeps vgamepad's method names (`left_joystick_float`, `press_button`, `update`, `reset`) so the swap was mechanical
+- Self-healing: skips serials whose child device is still present, proves a new pad with real reports, and re-plugs a pad whose device object has gone rather than letting it go silently dead (the bus quirk and the numbers are in `docs/vision/PAD_BUS_FORK_PLAN.md`, section 17)
+- `PADBUS_AVAILABLE` is True only when a bus is present; the module imports cleanly anywhere
 
 ### `ControllerBridge` (`src/bridge.py`)
 

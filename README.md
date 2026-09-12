@@ -392,6 +392,7 @@ Nimbus-Adaptive-Controller/
 │   ├── qt_dialogs.py                  # Qt Widgets settings dialogs
 │   ├── vjoy_interface.py              # vJoy driver interface (8 axes, 128 buttons)
 │   ├── vigem_interface.py             # ViGEm Xbox 360 controller emulation
+│   ├── padbus_client.py               # Pure-Python client for the ViGEmBus protocol
 │   ├── window_utils.py                # Game Focus Mode (Windows API)
 │   ├── borderless.py                  # Borderless gaming & cursor release
 │   └── legacy/                        # Legacy pygame UI (reference only)

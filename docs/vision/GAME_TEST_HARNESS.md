@@ -13,7 +13,7 @@ Nimbus is tested against real games by hand, and once by script: `tests/probe_ga
 This document is the plan and the record for a harness that makes those measurements unattended, in numbers, from the game itself:
 
 - **Recipes** (`tests/games/<game>.json`): how to launch a game into a playable state, what window to look for, which oracle reads its state, and where to put the player for a repeatable start.
-- **Oracles**: the Source engine's own console (`getpos`, `setpos`, `setang`, echoes, all through a console log on disk) for ground truth in degrees and units, and the existing frame differencing for games with no console.
+- **Oracles**: the Source engine's own console (`getpos`, `setpos`, `setang`, echoes, all through a console log on disk) for ground truth in degrees and units; Arma 3's own scripting (a generated mission that publishes the pose through the clipboard and takes commands back from it, since 2026-09-09); and the existing frame differencing for games with neither.
 - **Actuators**: a ViGEm pad the harness owns (fast, exact, for calibrating the game), and the real Nimbus app in-process, driven by synthesized pointer events on its widgets (the thing being tested).
 - **An environment** with `launch`, `wait_ready`, `reset`, `step`, `observe` and `close`: the environment shape Spectator+ needs, delivered first as a test fixture.
 - **A runner** that produces a results table per game and per actuator, in the style of the driver probes.
@@ -38,12 +38,13 @@ Spectator+ adds a fourth: **can a scripted or learned action reach a goal?** "Tu
 |---|---|---|---|
 | Frame differencing (exists) | any | none | moved / still against a noise floor |
 | Game console log (Source: `-condebug`, `getpos`, `setpos`, `setang`, `echo`) | Source engine titles (Left 4 Dead 2, Half-Life 2, Portal 2, Team Fortress 2, Counter-Strike: Source) | a cfg file and a key bind | position, view angles, button echoes, deterministic resets |
+| Game scripting (Arma 3: SQF in a generated mission, the clipboard as the channel both ways) | Arma 3, and any game with a script language, a clipboard command and a way to auto-start a mission | a mission folder and a launch parameter | position, view angles, held actions, resets and arbitrary script, streamed (added 2026-09-09) |
 | HUD reading (OpenCV template matching, OCR) | any with a readable HUD | opencv, easyocr; per-game templates | compass, ammo, health, crosshair state |
 | Vision-language judge (a model asked a yes or no question about two frames) | any | an API key or a local model; seconds per answer | coarse semantic verdicts, no numbers |
 | Memory reading, hooks | any without anti-cheat | Cheat Engine style tooling | exact state; fragile, and the wrong side of the line for an accessibility project |
 | A purpose-built test game | none real | a small pygame or Godot target | exact state over a socket; says nothing about real games |
 
-The console log is the only one that is both exact and cheap. It is limited to Source games, which is acceptable: Left 4 Dead 2 is already the reference title for everything that cannot run under anti-cheat, and the harness is built so a second oracle slots in per recipe.
+The console log is the only one that is both exact and cheap. It is limited to Source games, which is acceptable: Left 4 Dead 2 is already the reference title for everything that cannot run under anti-cheat, and the harness is built so a second oracle slots in per recipe. That second oracle exists since 2026-09-09: Arma 3 has no console the harness can type into but runs scripts, and a mission of the harness's own publishes the pose and takes commands over the clipboard (section 4.3, `arma3`), which is exact, cheap and streamed rather than sampled.
 
 ---
 
@@ -106,10 +107,16 @@ One JSON file per game in `tests/games/`. A recipe says how to launch the game i
 - `motion` (optional), `{"kind": "rotate"}`, says the camera swings and zooms rather than pans, so the frame oracle measures a rotation and a scale beside the shift (section 4.3). Halo Wars is the one recipe that carries it. The default is `shift`.
 - `reset_buttons` (optional), a list of the bridge's button ids pressed in turn by `reset()` on a game with no console. Halo Wars' `[13, 10]` is d-pad left (jump to the base) then right-stick click (rotation back to north). The first reset's picture becomes the reference frame, and every later reset is measured against it the way a step is: its motion from the reference has to read STILL. `reset_press_s`, `reset_gap_s` and `reset_settle_s` (0.15, 0.4 and 1.5 s) tune the presses and the wait for the camera to arrive.
 - `expect` (optional) holds bands on the rates checks measured last time, and turns a run into a regression test: `{"G5": {"0.40": {"deg_per_s": -13.8, "tol_pct": 15, "tol_abs": 1.0}}, "G8": {"units_per_s": 199.7, "tol_pct": 20, "tol_abs": 10}}`. The runner records a `<check>e` line for each band, passing when the measured rate is within the larger of the percentage and the absolute tolerance. Units are `deg_per_s` (a console's yaw or pitch, or a `rotate` recipe's measured rotation), `units_per_s` (a console's walk) and `px_per_s` (a believed shift on a frame game, horizontal for yaw, vertical for pitch). `--write-expect` fills the block from a run, for the checks in `--expect-checks` (G5 at `--expect-mags`, G7, G8, N2 and N5 by default; N1 is left out because a full deflection folds on Half-Life 2) with the default bands (15 percent or 1 deg/s, 20 percent or 10 units/s, 25 percent or 10 px/s), merging into what is there so a pad run and a Nimbus run each keep their own checks. Write bands from the checks a game repeats and leave them off the ones it does not.
+- `exe` (optional) launches the game by its own executable in `game_dir` instead of through `steam.exe -applaunch`, with `launch_args` as its arguments and Steam started first if it is not running. Arma 3 needs it: Steam's launch opens the Arma 3 Launcher and waits for a click, while `arma3battleye.exe 2 1 1 -exe arma3_x64.exe ...` starts the game with BattlEye directly (its first run shows BattlEye's privacy notice, a one-time click).
+- `window_min_client` (optional), `[w, h]`: a matching window smaller than this is not the game window. Arma 3 keeps a 506x250 start-up window alive beside the real one for minutes, and matching the title alone took it, and then a resize applied to it; the finder now takes the largest visible match and this key says what is too small.
+- `window_stages` (optional), a list drawn from `launch`, `sequence` and `ready`: the stages at which the recipe's `window` is applied (all three by default). Arma 3 hung before starting its mission when resized while loading, so its recipes name `ready` only.
+- `walk_min_units` (optional, default 20) is the distance a second of full left stick has to cover in G8, N5 and the calibration, in the game's units. The default is Source's; Arma 3 walks in metres, about five a second, and its recipes say 2.5.
+- `pitch_rate_deg_per_s` (optional, default 25) is what `level_pitch` assumes for the right stick at 0.6, on a game whose reset cannot set the pitch (section 4.3, `arma3`).
+- `oracle.type` `arma3` takes `mission` (the folder name under the game's `Missions`, world suffix included), `spawn` (`[x, y]` on that world) and `button_echo` keyed by the harness's button ids with the game's `inputAction` names as markers (`{"1": "Action"}`: A reads as `Action` while held).
 
 ### 4.2 The launcher, and the launch-order rule
 
-`Launcher.launch()` deletes the previous console log, writes the harness cfg (section 5), and runs `steam.exe -applaunch <id> <args>`. Steam starts if it is not running, and is left running at the end; only the game process is killed.
+`Launcher.launch()` deletes the previous console log, writes the harness cfg (section 5), and runs `steam.exe -applaunch <id> <args>`, or the recipe's `exe` from `game_dir` when it names one (Arma 3's BattlEye launcher). Steam starts if it is not running, and is left running at the end; only the game process is killed.
 
 The pad exists before the game is launched. Source decides at start-up whether an XInput controller is present and never reads one created later (measured 2026-09-06 in the aim work: the mouse moved the camera, the pad did not, and the HUD showed the generic JOY3 glyph). The environment therefore builds its actuator in `__init__` and launches the game afterwards, so the rule is enforced by construction rather than by remembering the order of two commands. In Nimbus mode it is Nimbus's pad that has to exist first, so the app is started in-process, then the game is launched.
 
@@ -127,11 +134,15 @@ An oracle answers `pose()` (a position and view angles, or `None` when the game 
 
 The verdict is MOVED for a believed shift past the threshold (or, on a `rotate` recipe, a believed rotation or zoom past theirs), for a picture that changed in at least 12 of the 16 cells (the camera outran the overlap), or for a change spread over 3 cells and 3 times the idle floor (a walk forward is an expansion, not a shift, and has no single offset); STILL for a confident peak at the origin with at most two cells changed, whatever animated inside them; INCONCLUSIVE otherwise. The thresholds come from `--idle-samples` idle seconds (three by default): the floor is the largest changed count over them, and the shift threshold is twice the largest believed idle shift, never under 8 px, so a scene that sways while idle sets its own bar. The changed count is still recorded beside the motion, and every step's line reads `changed=N shift=(dx,dy) px peak=... conf=... static=... cells=k/16 -> VERDICT`. `pose()` is `None`, `reset()` presses the recipe's `reset_buttons` when it has them and is otherwise a no-op, readiness is a fixed warm-up.
 
+**`arma3`** (2026-09-09). The harness cannot type into Arma 3, but Arma can run a script, so the oracle writes a mission and lets the game do the talking. `prepare_launch` puts a one-soldier mission on the VR world (flat, gridded, so the frame oracle sees a turn too) into the game's `Missions` folder, `mission.sqm` and an `init.sqf`, and the recipe launches straight into it with `-init=playMission['','nimbus_harness.VR',true]`. The script publishes the player's pose about thirty times a second with `copyToClipboard`: position (ASL), the yaw and pitch of `getCameraViewDirection` (a compass heading, clockwise, so stick right is a positive delta and the recipe's `turn_right_sign` is 1; pitch up positive; `eyeDirection` was tried first and does not follow the aim's pitch), the body heading, which user actions are held (`inputAction` over a fixed list, which is what the button check reads), and a count of commands taken. Each line also goes to the game's report file with `diag_log`, which trails the clipboard by a steady third of a second (measured), a usable fallback for readiness and echoes but too slow for tracking a turn through a hold. The way back is the same channel: the script reads the clipboard before each pose it writes, and `NIMBUS_RESET x y z dir` puts the player back with `setPosASL` and `setDir` (0.33 s round trip, under 0.3 degrees of yaw), while `NIMBUS_EXEC <sqf>` runs a line of script, a code channel that exists only while the throwaway mission runs and is what settled, empirically, that nothing in SQF sets the aim's pitch (`setVectorDirAndUp`, `switchMove`, `lookAt`, `playMoveNow` all left it where it was). So `resets_pitch` is false on this oracle: the reset check judges the yaw only, and `GameEnv.level_pitch` brings the pitch back with the actuator itself, a closed loop on the right stick at 0.6 using the recipe's `pitch_rate_deg_per_s`, which under Nimbus means the aim widget being dragged. A pose is believed only when its tick time has moved on since the last read, and readiness needs two of them advancing, so a line left on the clipboard by a previous instance reads as no pose; the clipboard is cleared at launch. The user's clipboard is clobbered for the length of a run, and a copy made during one interrupts the channel for one read.
+
+Three things Arma 3 taught that live in this oracle and the recipe keys above. The game lists every controller it found at start-up in the player's profile and gives a new XInput pad `mode="Disabled"`; with that the sticks and buttons do nothing, and `enable_pad_in_profile` sets the engine's own Xbox scheme, `SchemeMovementLeftBrakeTriggerAccTrigger` (the name comes from the game's config; `Custom` and `Default` are accepted too and drive the sticks the same way), behind a `.nimbus-harness.bak` copy, which means the first run on a machine enables nothing (the entry does not exist yet) and the second works. A config error in the profile (a joystick entry with no `mode`, which one of the day's hand edits caused) comes up as a modal "No entry" box that stalls the game for minutes; the oracle never removes a line. And pressing Start opens the pause menu, which in single player freezes the mission's script and with it the pose stream, so nothing here presses it.
+
 ### 4.4 Actuators
 
 An actuator takes an action, a dictionary with any of `lx`, `ly`, `rx`, `ry` (minus one to one, right and up positive as XInput has it), `lt`, `rt` (zero to one) and `buttons` (a list of the bridge's button ids, 1 to 14 under ViGEm), and applies it. `release()` centres everything.
 
-**`pad`.** A `vgamepad` Xbox 360 pad the harness owns. Exact and fast: what the harness asks for is what the game receives, so this is the actuator for calibrating a game.
+**`pad`.** An Xbox 360 pad the harness owns, an `X360Pad` from `src/padbus_client.py` (vgamepad until 2026-09-09). Exact and fast: what the harness asks for is what the game receives, so this is the actuator for calibrating a game.
 
 **`nimbus`.** The real QML app in-process, the way `tests/probe_stick_shaping_windows.py` runs it: the bridge, the QML engine and the profile are the real ones, the pointer is synthesized `QMouseEvent`s on the joystick and button widgets, and the ViGEm pad is the bridge's own. A stick action becomes a drag of `value * travel` pixels from the widget's centre (`travel` is the widget's `travel_px`, else its drawn radius), so the whole shaping chain runs (deadzone, curve, anti-deadzone floor, extremity cap); the actuator reports what the bridge actually sent from the ViGEm interface's `current_values` beside what the game did, and the expected values come from the bridge's own resolved parameters through `shape_magnitude`, never from a number in this document. The app is placed beside the game window, never over it. By default the run uses a throwaway copy of the bundled `adaptive_platform_2` profile written into the user profiles folder and removed afterwards, so the result does not depend on what the user has done to their own copy; `--profile <id>` runs an existing profile instead. When several widgets could take the press (the user's copy of the bundled profile has two overlapping left sticks), the actuator picks the topmost one whose centre nothing later in the layout covers, because that is where a real press would land. `controller_config.json` is restored afterwards.
 
@@ -169,7 +180,7 @@ Sign conventions, so numbers in the results log read the same way everywhere: `r
 | `<check>e` expected | for every band in the recipe's `expect` block (G5 per magnitude, G7, G8, and N1, N2, N5 on the Nimbus run): the measured rate is within the band; a check with a band and nothing comparable measured fails |
 | G6 yaw left | `rx` at minus 0.6: the opposite sign, and a rate within 25 percent of the right turn at 0.6 |
 | G7 pitch | `ry` at 0.6: more than 1 degree of pitch; the sign is recorded |
-| G8 move | `ly` at 1.0 for one second: more than 20 units of horizontal travel; units per second recorded |
+| G8 move | `ly` at 1.0 for one second: more than the recipe's `walk_min_units` of horizontal travel (20 by default, Source units; 2.5 on Arma 3, in metres); units per second recorded |
 | G9 button | the pad button bound to the echo marker: the marker appears in the log within two seconds |
 | G10 release | after everything: one second idle, pose unchanged (nothing is stuck) |
 | G11 latency | `rx` at 1.0 with the pose polled every 60 ms: the first sample whose yaw moved, as a coarse latency bound |
@@ -184,7 +195,7 @@ With `--actuator nimbus` the same environment runs with the real app, and the ch
 | N2 one-pixel drag | a 1 px drag turns the camera by more than 1 degree, and the bridge sent its own floor for that stick: the anti-deadzone clears the game's threshold, now in degrees. On a recipe with `floor_moves_camera` false the rule inverts: the floor was sent and the camera stayed still |
 | N3 release | the stick released reads exactly zero at the bridge and the pose is stable |
 | N4 button | a click on the LB widget produces the echo marker in the log |
-| N5 left stick | a full drag up on the left stick moves the player more than 20 units, and the bridge sent its ceiling |
+| N5 left stick | a full drag up on the left stick moves the player more than the recipe's `walk_min_units`, and the bridge sent its ceiling |
 
 then the Spectator+ primitives (section 4.7) through the bridge's own runner, measured by the game:
 
@@ -237,6 +248,16 @@ The end-to-end run with the real app, same environment, including the Spectator+
 venv\Scripts\python tests\probe_game_harness_windows.py --game left4dead2 --actuator nimbus
 ```
 
+Arma 3, the BattlEye title, with and without the anti-cheat (the second is the control; run them one after the other, never together):
+
+```
+venv\Scripts\python tests\probe_game_harness_windows.py --game arma3 --actuator pad
+venv\Scripts\python tests\probe_game_harness_windows.py --game arma3 --actuator nimbus
+venv\Scripts\python tests\probe_game_harness_windows.py --game arma3_nobe --actuator pad
+```
+
+Two things about the first time on a machine: BattlEye's launcher shows its privacy notice once, an OK to click, and Arma only lists the pad in the player's profile after a launch with the pad present, so the first run finds nothing to enable and the second works. During a run, leave the clipboard alone as well as the mouse and keyboard: the pose travels through it.
+
 The primitives need the calibration the pad run writes with `--write-calibration` (checked in as `src/spectator/calibrations/left4dead2.json`; rerun it after a change to the game's controller cfg or to the harness's hold timing). The second Source game, which needs no flags and takes about two minutes:
 
 ```
@@ -270,8 +291,8 @@ Run them in separate invocations, with the game quit in between (the runner does
 
 ## 7. Limits and open questions
 
-- **Anti-cheat titles** cannot be launched by this harness under test signing, and their state cannot be read from a console anyway. Elden Ring stays on frame differencing, launched by hand.
-- **The pose is sampled, not streamed.** Each pose read costs a key press and a log read, about 47 ms on the dev machine, so `observe()` is good to about 50 to 100 ms and the latency check is a bound, not a measurement. Fine for tests and for scripted primitives; a learned agent at frame rate would need `cl_showpos` on screen and a reader, or a plugin.
+- **Anti-cheat titles** run when test signing is off: Elden Ring (Easy Anti-Cheat) on frame differencing, and since 2026-09-09 Arma 3 (BattlEye) with a pose from its own scripting, launched by the harness through BattlEye's launcher. Under test signing EAC refuses to start; whether BattlEye does is untested. Neither run touches a server, which is where BattlEye's kicks happen.
+- **The pose is sampled, not streamed, on Source.** Each pose read there costs a key press and a log read, about 47 ms on the dev machine, so `observe()` is good to about 50 to 100 ms and the latency check is a bound, not a measurement. Arma 3's oracle streams it instead, about thirty poses a second on the clipboard, and a read costs a few milliseconds. Fine for tests and for scripted primitives; a learned agent at frame rate would need `cl_showpos` on screen and a reader, or a plugin.
 - **The safe room** has walls within 114 to 140 units in three of eight headings from the reset spot. `--survey-walk` measures all eight and turns the reset pose to the clearest (200 units at yaw 135); a game or map change should rerun it with `--write-reset-pose`.
 - **The frame oracle is not trustworthy in the Source scenes, and now says so itself.** The survivor bots walk through Left 4 Dead 2's safe room and the flashlight beam sways while idle: the idle second measures a coherent 54 px sway of the beam, so the run's shift threshold is 108 px and a 1.5 degree turn reads STILL against a console that saw it. The verdict is recorded beside the ground truth and never used for a pass on a Source game. A recipe for a game with no console should pick a scene without moving actors.
 - **A repeating texture aliases the shift.** Phase correlation finds the true shift modulo the texture's period: the safe room's wallpaper is striped every 56 px, and every turn in the saved sweep measured its true shift less a whole number of stripes, sign and all (34 degrees, about 480 px, read as +80). The verdict survives, because any coherent move past the threshold is a move; the pixel figure is a number to band only where a run shows it repeats.
@@ -559,6 +580,26 @@ The cliff between 0.40 and 0.60 is where it was. The rotation estimate believed 
 **PowerWash Simulator, Nimbus, 10/11 then 11/11, full screen.** The first run, under the module as it stood before the merge, failed N2: the one-pixel drag sent the 0.289 floor and changed 9,956 samples, about what the pad's 0.28 step changes, but the only believed peak was the wand's 9 px bob, and the world's shift was in the surface as two halves of 0.035 either side of the zero row, at 63 px, each under the floor. That pair of frames is where the peak merging in section 4.3 came from. The rerun under the final module passed 11/11: the same drag, 9,711 changed samples, a merged peak of 0.08 at 58 px leftward in the second, between the pad's 48 px at 0.28 and 79 px at 0.30, which is where 0.289 belongs. So the 2026-09-08 conclusion stands, the floor clears this game's threshold, and it now stands on a measured shift rather than a changed count; the rate is banded as this recipe's N2. The idle floor was 2,409 over three seconds, the full drag changed 13 cells, the left stick 11.
 
 ---
+
+### 2026-09-09, dev machine, Arma 3 (BattlEye on and off), the generated VR mission, 1280x720 borderless, both actuators
+
+The BattlEye title of `PAD_BUS_FORK_PLAN.md` section 13, and the first game with a pose oracle that is not a Source console: the `arma3` oracle of section 4.3, built and measured this afternoon on the pure-Python pad client that replaced vgamepad the same day. Two recipes, `arma3` (launched by `arma3battleye.exe`, BattlEye's service running, `-beservice` on the game's command line) and `arma3_nobe` (the game executable directly), the same mission and oracle. Runs: `arma3` pad 13/13, `arma3` Nimbus 17/17 including the five Spectator+ primitives from the calibration the pad run wrote, `arma3_nobe` pad 13/13. Bands were written from the pad runs and a Nimbus run afterwards.
+
+| Measure | BattlEye | No BattlEye |
+|---|---|---|
+| Window found, ready | 22 s, 32 s | 8 s, 18 s |
+| Right stick 1.00 | +305.0 deg/s | +305.2 deg/s |
+| Right stick 0.60 | +36.66 deg/s | +36.67 deg/s |
+| Left at 0.60 | -36.67, ratio 1.00 | -36.67, ratio 1.00 |
+| Deadzone (sweep) | still at 0.30, moved at 0.40 | the same |
+| Pitch, 0.60 held | +24.9 deg | +25.4 deg |
+| Walk, full stick | 5.1 m/s (0.95, 2.37, 4.91 m at 0.25, 0.5, 1 s) | 5.1 m/s (1.05, 2.46, 4.91) |
+| Button A | `Action` in 32 ms | 32 ms |
+| 1280x720 borderless at readiness | took | took |
+
+Nimbus on the BattlEye recipe: full drag +240.3 deg/s at the bridge's 0.95 ceiling (the game's response is steeper past 0.95, which is why the pad's full stick reads 305), the 1 px drag sends the 0.289 floor and the camera stays still (`floor_moves_camera` false: the game's threshold is above the floor, like Half-Life 2 and Halo Wars), the A widget echoes `Action` in 47 ms, a full drag up walks 3.9 m in the second, and the primitives: turn right 90 got 88.4, turn left 45 got -45.5, turn right 10 got 10.1, walk 100 m got 99.3 in 19.7 s, and a cut-short walk stopped in 1.4 m.
+
+So under BattlEye a stock ViGEmBus pad is indistinguishable from no BattlEye, in single player, on every number the harness measures: the anti-cheat neither blocks the virtual pad nor changes what it does. That is the baseline a fork of the bus has to match, and it says nothing yet about a server join, where BattlEye's kicks happen; that remains a manual step. What the day cost, all recorded in section 4.3 and the recipe keys: the pad is disabled in the profile until enabled (a scheme name from the game's config), the profile's start-up window is not the game window, a resize while loading hangs the game, Start freezes the mission's script, `eyeDirection` does not follow the aim's pitch, nothing in SQF sets that pitch (so the actuator levels it), and a joystick entry with a missing `mode` (a hand edit's doing) brings up a modal box that stalled one run for three minutes. The clipboard channel is the one part that needs the machine left alone in a new way: a copy during a run interrupts it for a read, and the tests take the foreground and press Escape, so the "leave the mouse and keyboard alone" rule covers copy and paste here too.
 
 ## Related Documents
 

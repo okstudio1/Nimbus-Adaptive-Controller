@@ -32,7 +32,7 @@ mouse (after)       Sweep again with the game foreground, to prove recovery.
 Injected motion is a stand-in for the physical mouse only above ``win32k``;
 it says nothing about a kernel filter.  See ``probe_rawinput_windows.py``.
 
-Run (from the repo root, venv with PySide6 and vgamepad)::
+Run (from the repo root, venv with PySide6; ViGEmBus installed)::
 
     venv\\Scripts\\python tests\\probe_game_mouselook_windows.py --title "Carrier Command"
 
@@ -65,12 +65,12 @@ from probe_rawinput_windows import (  # noqa: E402
     INPUT, MOUSEINPUT, INPUT_MOUSE, MOUSEEVENTF_MOVE, WS_EX_TOPMOST, WM_CLOSE, user32, kernel32,
 )
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
-    import vgamepad as vg
-    VGAMEPAD_AVAILABLE = True
+    from src.padbus_client import X360Pad, PADBUS_AVAILABLE as VGAMEPAD_AVAILABLE  # noqa: E402
 except Exception as exc:  # pragma: no cover
     VGAMEPAD_AVAILABLE = False
-    print(f"vgamepad unavailable: {exc}")
+    print(f"virtual gamepad client unavailable: {exc}")
 
 EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 user32.EnumWindows.argtypes = [EnumWindowsProc, wintypes.LPARAM]
@@ -168,7 +168,7 @@ def sweep_setcursorpos(px: int, steps: int = 50, spacing_s: float = 0.01) -> Non
 
 class Pad:
     def __init__(self) -> None:
-        self.pad = vg.VX360Gamepad() if VGAMEPAD_AVAILABLE else None
+        self.pad = X360Pad() if VGAMEPAD_AVAILABLE else None
         if self.pad:
             self.pad.update()
 

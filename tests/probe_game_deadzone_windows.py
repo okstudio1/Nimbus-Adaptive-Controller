@@ -197,7 +197,7 @@ def run_sweep(args: argparse.Namespace) -> int:
     magnitudes = [float(m) for m in args.magnitudes.split(",") if m.strip()]
     pad = Pad()   # before the game starts; see wait_for_game
     if not pad.pad:
-        print("vgamepad unavailable; nothing to sweep")
+        print("virtual gamepad bus unavailable; nothing to sweep")
         return 2
     hwnd = wait_for_game(args)
     if not hwnd:

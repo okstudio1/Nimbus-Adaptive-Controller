@@ -56,7 +56,9 @@ This mirrors the existing `Ctrl+Alt+F12` emergency stop in Full Game Mode, and t
 
 ### Probe script
 
-Use **vgamepad** first, not raw uinput. It is the library [vigem_interface.py](../../src/vigem_interface.py) already depends on, so this tests the real Nimbus code path on Linux rather than a parallel implementation. Fall back to raw `evdev.UInput` only if vgamepad's experimental Linux backend misbehaves.
+> **Note, 2026-09-09:** [vigem_interface.py](../../src/vigem_interface.py) no longer depends on vgamepad; on Windows it goes through `src/padbus_client.py`, whose `X360Pad` keeps vgamepad's method names. vgamepad is still a fine probe tool on Linux, but the "real Nimbus code path" argument below no longer holds: the port needs a Linux `X360Pad` with the same method names over uinput.
+
+Use **vgamepad** first, not raw uinput. It is the library [vigem_interface.py](../../src/vigem_interface.py) used to depend on and its `X360Pad` still mirrors, so this tests the same call shape on Linux rather than a parallel implementation. Fall back to raw `evdev.UInput` only if vgamepad's experimental Linux backend misbehaves.
 
 ```python
 """Throwaway probe. Not Nimbus code. Grabs the mouse, emits right-stick motion."""

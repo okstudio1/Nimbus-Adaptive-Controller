@@ -115,7 +115,7 @@ L1 dominates, and L2 is close to pointless on inspection: the games that would f
 | `window_utils.py`: `WS_EX_NOACTIVATE` focus juggling | Largely delete. Wayland clients cannot steal focus the way Win32 windows can. |
 | `mouse_hider.py` | Delete. |
 | `vjoy_interface.py` (pyvjoy, requires vJoy driver) | `uinput` virtual device. Kernel module already present on every distro. |
-| `vigem_interface.py` (vgamepad, requires ViGEmBus) | **vgamepad already ships a Linux backend** built on evdev/uinput, same Python API. |
+| `vigem_interface.py` (`src/padbus_client.py`, requires ViGEmBus) | A uinput pad with the same `X360Pad` method names. vgamepad's Linux backend (evdev/uinput) is the reference for it, but since 2026-09-09 Nimbus no longer depends on vgamepad on Windows, so this shim is written for the port rather than inherited. |
 | **Option F: signed kernel filter driver, EV cert, bricking risk** | **`InputDevice.grab()`. One line.** |
 
 That last row is the finding. The single highest-effort item on the Windows roadmap, a kernel-mode mouse class filter driver with a $300 to $600/yr code-signing certificate, is a standard library call on Linux.

@@ -198,7 +198,10 @@ The real gap is a packaging one, and it belongs with the installer work rather
 than here. Three facts, all checked on 2026-09-06:
 
 - `pip install vgamepad` silently installs **ViGEmBus 1.17.333.0** from a
-  bundled MSI, which is what this dev machine is running.
+  bundled MSI, which is what this dev machine was running. (Since 2026-09-09
+  neither holds: the app speaks the bus protocol itself through
+  `src/padbus_client.py` and `vgamepad` is gone from `requirements.txt`, and
+  this machine runs the installer's build, `ViGEmBus.sys` 1.21.442.0.)
 - The last and final release is **1.22.0** (2023-11-02). The project was
   archived that day after a trademark dispute; it is BSD-3-Clause and ships an
   all-in-one signed setup.
@@ -221,6 +224,17 @@ Partner Center verifies. Writing our own
 virtual gamepad bus driver is a much larger project than this filter and is not
 on the table now, but it is the thing to reconsider if attestation signing ever
 closes and we end up building an HLK pipeline anyway.
+
+**Since 2026-09-09 there is a plan for that reconsideration:**
+[docs/vision/PAD_BUS_FORK_PLAN.md](../docs/vision/PAD_BUS_FORK_PLAN.md) works
+out what forking ViGEmBus would take, and it argues against this section on two
+of its three points. The collision argument is answered by a rename and new
+GUIDs (its section 8). The "not our code" and Code Signing Agreement arguments
+are accepted, and become the reason it makes hardening, static analysis and
+Driver Verifier mandatory before any submission: we would have to actually own
+the code, not merely rename it. Nothing changes here until that plan is
+accepted, and it is gated on an anti-cheat question that has not been asked
+yet. If it is accepted, this section gets rewritten rather than deleted.
 
 ## Sources
 

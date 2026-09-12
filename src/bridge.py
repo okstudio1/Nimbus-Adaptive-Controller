@@ -1108,7 +1108,7 @@ class ControllerBridge(QObject):
 
     @Slot(result=bool)
     def isVigemAvailable(self) -> bool:  # noqa: N802
-        """Check if ViGEm (vgamepad) is available on this system."""
+        """Check if a virtual gamepad bus (ViGEmBus) is present on this system."""
         return self._output.vigem_available
 
     @Slot(str)
@@ -1951,14 +1951,14 @@ class ControllerBridge(QObject):
                     print("[bridge] Full Game Mode: on-demand ViGEm gamepad created!")
                 else:
                     print("[bridge] Full Game Mode: ViGEm gamepad creation failed")
-                    print("[bridge]   -> Is ViGEmBus driver installed? Run: pip install vgamepad")
+                    print("[bridge]   -> Is the ViGEmBus driver installed and started?")
             except Exception as e:
                 print(f"[bridge] Full Game Mode: ViGEm init error: {e}")
         else:
             print("[bridge] Full Game Mode: ViGEm NOT available")
-            print("[bridge]   -> vgamepad package or ViGEmBus driver not installed")
+            print("[bridge]   -> ViGEmBus driver not installed or not started")
             print("[bridge]   -> Controller mode enforcement requires ViGEm")
-            print("[bridge]   -> Install: pip install vgamepad")
+            print("[bridge]   -> The Nimbus installer includes ViGEmBus")
         
         if MOUSE_HIDER_AVAILABLE and gamepad:
             try:

@@ -36,6 +36,7 @@
 - [Testing Strategy](vision/TESTING_STRATEGY.md): from liveness checks to regression tests; the fast-test runner and CI, the frame oracle as a motion measurement, windowed games, a console-less reset and expected-value bands, with what the saved frames changed about the design and what the rerun of every game found
 - [Linux Probe Plan](vision/LINUX_PROBE_PLAN.md) — proposed weekend experiment to test EVIOCGRAB + uinput against a real EAC game
 - [Windows Mouse Filter Plan](vision/WINDOWS_MOUSE_FILTER_PLAN.md): the Windows counterpart, a mouclass upper filter that hands the physical mouse to Nimbus, motivated by the Raw Input measurements in section 8 of Host Mode
+- [Pad Bus Fork Plan](vision/PAD_BUS_FORK_PLAN.md): forking and modernizing the archived ViGEmBus into a Nimbus-owned virtual gamepad bus driver; what the driver really does, a pure-Python client that drops the `vgamepad` dependency first, the rename and coexistence inventory, and the anti-cheat gate that decides whether we ever sign it
 - [Nimbus Mouse Filter driver README](../driver/README.md): building, test-signing, and dev-installing the kernel filter (prototype, not in any release)
 - [Driver release signing](../driver/SIGNING.md): Partner Center registration, attestation signing, and where attestation stands after the April 2026 Windows Driver Policy
 

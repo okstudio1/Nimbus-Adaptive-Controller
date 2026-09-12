@@ -22,15 +22,15 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      # vgamepad's setup.py runs the ViGEmBus MSI installer when the driver
-      # is missing, which is a kernel driver setup and not something a CI
-      # runner should attempt; the app imports it behind a try/except, so
-      # the suite runs without it. PyInstaller is only for packaging.
+      # PyInstaller is only for packaging, so the runner skips it. Nothing else
+      # in requirements.txt touches a driver at install time: the virtual pad
+      # client is pure Python (src/padbus_client.py) and the app degrades
+      # gracefully when no bus driver is present.
       - name: Install dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          Get-Content requirements.txt | Where-Object { $_ -notmatch '^(vgamepad|pyinstaller)' } | Set-Content ci-requirements.txt
+          Get-Content requirements.txt | Where-Object { $_ -notmatch '^pyinstaller' } | Set-Content ci-requirements.txt
           Get-Content ci-requirements.txt
           pip install -r ci-requirements.txt
 

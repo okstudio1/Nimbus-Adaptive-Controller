@@ -14,7 +14,8 @@ pad (default)
     G0  launch: the game window appears within the recipe's timeout, and the
         recipe's ``window`` (size, position, borderless) is applied and re-applied
         as the game loads, recording whether it took
-    G1  ready: the oracle answers (a pose is read from the console log)
+    G1  ready: the oracle answers (a pose is read: from the console log on
+        Source, from the clipboard on Arma 3)
     G2  reset: the player is put back within 2 units and 1 degree; with no
         console but ``reset_buttons`` in the recipe, a second of left stick
         then the buttons brings the picture back to a reference frame
@@ -26,8 +27,9 @@ pad (default)
         measured motion (tests/frame_motion.py) rather than a changed count
     G6  yaw left: opposite sign, rate within 25 percent of the right turn
     G7  pitch: right stick up changes the pitch by more than 1 degree
-    G8  move: left stick up for a second moves the player more than 20 units
-    G9  button: the pad button bound to an echo marker lands in the console log
+    G8  move: left stick up for a second moves the player more than the recipe's
+        walk_min_units (20 by default; metres on Arma 3)
+    G9  button: the pad button bound to an echo marker reaches the oracle
     G10 release: nothing is stuck afterwards
     G11 latency: the first pose sample whose yaw moved after the stick went on
     G12 calibration: yaw against hold time at several magnitudes, and walk
@@ -56,7 +58,7 @@ nimbus
     P4  walk 100 units: within 20 percent or 10 units
     P5  stop: a long walk cut short releases the stick and the player stops
 
-Run (from the repo root, venv with PySide6 and vgamepad; ViGEmBus installed;
+Run (from the repo root, venv with PySide6; ViGEmBus installed;
 Steam able to sign in without a prompt)::
 
     venv\\Scripts\\python tests\\probe_game_harness_windows.py --game left4dead2 --actuator pad
@@ -226,11 +228,12 @@ def launch_and_ready(env: GameEnv, launch_name: str, ready_name: str) -> bool:
     env.run_sequence()
     ready = env.wait_ready()
     p = env.pose() if ready else None
-    console = env.oracle.kind == "source_console"
-    log_ok = (not console) or env.oracle.log.exists()
+    console = env.oracle.has_pose
+    log = getattr(env.oracle, "log", None)      # only the Source oracle reads a console log
+    log_ok = (not console) or log is None or log.exists()
     record(ready_name, ready and log_ok and (not console or p is not None),
            (f"ready after {env.ready_at - env.launched_at:.0f}s; " if ready else "not ready in time; ")
-           + (f"console log {'present' if log_ok else 'missing'}; " if console else "")
+           + (f"console log {'present' if log_ok else 'missing'}; " if log is not None else "")
            + fmt_pose(p))
     return ready and log_ok
 
@@ -245,7 +248,7 @@ def establish_reset_pose(env: GameEnv, args: argparse.Namespace) -> Optional[Dic
         if args.write_reset_pose:
             write_reset_pose(env.recipe, p)
             print(f"[harness] wrote reset_pose into {env.recipe['_path']}", flush=True)
-    if env.oracle.kind != "source_console" and env.can_reset():
+    if not env.oracle.has_pose and env.can_reset():
         # A game with reset buttons: press them once, and what they leave on
         # screen is the reference every later reset has to reproduce.
         env.reset()
@@ -259,8 +262,14 @@ def check_reset(env: GameEnv, name: str) -> None:
     q = env.pose()
     rp = env.oracle.reset_pose
     dist, dang = pose_error(rp, q) if (q and rp) else (math.inf, math.inf)
+    angle_note = ""
+    if q and rp and not env.oracle.resets_pitch:
+        # only the yaw can be set on this game (Arma 3: setDir); the pitch is
+        # wherever the last test left it and is not part of the reset
+        dang = abs(wrap_deg(q["ang"][1] - rp["ang"][1]))
+        angle_note = " (yaw only; this game cannot reset pitch)"
     record(f"{name} reset puts the player back within 2 units and 1 degree",
-           ok and dist < 2.0 and dang < 1.0, f"dist={dist:.2f} dang={dang:.2f} {fmt_pose(q)}")
+           ok and dist < 2.0 and dang < 1.0, f"dist={dist:.2f} dang={dang:.2f}{angle_note} {fmt_pose(q)}")
 
 
 def check_reset_frames(env: GameEnv, name: str) -> None:
@@ -292,7 +301,7 @@ def record_idle(env: GameEnv, name: str, recs: List[Dict[str, Any]], with_thresh
         stable = all(abs(r["d_yaw"]) < 0.5 and r["d_horiz"] < 1.0 for r in posed)
         note = "; ".join(f"d_yaw={r['d_yaw']:+.2f} d_horiz={r['d_horiz']:.2f}" for r in posed)
     else:
-        stable = env.oracle.kind != "source_console"
+        stable = not env.oracle.has_pose
         note = "no pose"
     note += f"; changed={[r['changed'] for r in recs]}; " + describe(recs[0].get("motion"))
     if with_thresholds:
@@ -320,9 +329,10 @@ def yaw_note(r: Dict[str, Any], env: GameEnv) -> str:
 def pad_checks(env: GameEnv, args: argparse.Namespace) -> None:
     recipe = env.recipe
     sign = int(recipe.get("turn_right_sign", -1))
+    walk_min = float(recipe.get("walk_min_units", 20.0))   # Source units by default; metres on Arma 3
     hold = float(args.hold)
     mags = [float(m) for m in args.sweep.split(",") if m.strip()]
-    console = env.oracle.kind == "source_console"
+    console = env.oracle.has_pose
 
     expect_mags = {f"{float(m):.2f}" for m in args.expect_mags.split(",") if m.strip()}
     establish_reset_pose(env, args)
@@ -448,7 +458,7 @@ def pad_checks(env: GameEnv, args: argparse.Namespace) -> None:
     rate = measured_rate(env, r, "walk")
     note_measured(env, "G8", "-", rate)
     if console and "d_horiz" in r:
-        ok = r["d_horiz"] > 20.0
+        ok = r["d_horiz"] > walk_min
         note = f"d_horiz={r['d_horiz']:.1f} units in 1.0s, d_z={r['d_z']:+.1f}; " + env.motion_note(r)
     else:
         ok = r["verdict"] == "MOVED"
@@ -476,7 +486,7 @@ def pad_checks(env: GameEnv, args: argparse.Namespace) -> None:
         dt = (time.monotonic() - t0) * 1000.0
         time.sleep(0.1)
         env.actuator.release()
-        record(f"G9 button: pad button {bid} lands in the console log as {marker}", ok,
+        record(f"G9 button: pad button {bid} reaches the oracle as {marker}", ok,
                f"{dt:.0f} ms" if ok else "no echo within 2 s")
     time.sleep(0.3)
 
@@ -531,7 +541,7 @@ def pad_checks(env: GameEnv, args: argparse.Namespace) -> None:
             env.reset()
             walk_rows.append([h, round(float(r.get("d_horiz", 0.0)), 2)])
         print("    ly=1.00  " + "  ".join(f"{h:.2f}s: {u:.1f}" for h, u in walk_rows), flush=True)
-        walk_ok = bool(walk_rows) and walk_rows[-1][1] > 20.0 and all(
+        walk_ok = bool(walk_rows) and walk_rows[-1][1] > walk_min and all(
             b >= a for (_, a), (_, b) in zip(walk_rows, walk_rows[1:]))
         record("G12 calibration: yaw and walk grow with hold time at every magnitude", monotone and walk_ok,
                f"yaw at {list(yaw_table)} for holds {cal_holds}; walk {walk_rows}")
@@ -551,8 +561,9 @@ def pad_checks(env: GameEnv, args: argparse.Namespace) -> None:
 def nimbus_checks(env: GameEnv, act: NimbusActuator, args: argparse.Namespace) -> None:
     recipe = env.recipe
     sign = int(recipe.get("turn_right_sign", -1))
+    walk_min = float(recipe.get("walk_min_units", 20.0))   # Source units by default; metres on Arma 3
     hold = float(args.hold)
-    console = env.oracle.kind == "source_console"
+    console = env.oracle.has_pose
 
     establish_reset_pose(env, args)
     if console:
@@ -671,7 +682,7 @@ def nimbus_checks(env: GameEnv, act: NimbusActuator, args: argparse.Namespace) -
     ly = float(sent.get("left_y", 0.0))
     sent_ok = abs(ly - exp_left) <= 0.02
     if console and "d_horiz" in r:
-        ok = r["d_horiz"] > 20.0 and sent_ok
+        ok = r["d_horiz"] > walk_min and sent_ok
         note = (f"sent LX={float(sent.get('left_x', 0)):+.3f} LY={ly:+.3f} (bridge ceiling {exp_left:.3f}); "
                 f"d_horiz={r['d_horiz']:.1f} units in 1.0s; " + env.motion_note(r))
     else:
@@ -689,7 +700,8 @@ def primitive_checks(env: GameEnv, act: NimbusActuator, args: argparse.Namespace
     from src.spectator.calibration import CALIBRATIONS_DIR
     recipe = env.recipe
     sign = int(recipe.get("turn_right_sign", -1))
-    if env.oracle.kind != "source_console":
+    walk_min = float(recipe.get("walk_min_units", 20.0))   # Source units by default; metres on Arma 3
+    if not env.oracle.has_pose:
         record("P0 primitives", True, "no console oracle to measure a turn with, skipped")
         return
     cal_path = os.path.join(CALIBRATIONS_DIR, f"{recipe['name']}.json")

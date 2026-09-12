@@ -183,12 +183,15 @@ function Format-ViGEm($v) {
 }
 
 function Test-ViGEmClient {
-    # The proof that matters: can vgamepad, which the app uses, open a pad.
-    return Invoke-Python @'
-import vgamepad
-vgamepad.VX360Gamepad()
-print('client opened a virtual pad')
-'@
+    # The proof that matters: can the app's own client (src/padbus_client.py) open a pad.
+    return Invoke-Python @"
+import sys
+sys.path.insert(0, r'$repo')
+from src.padbus_client import X360Pad
+pad = X360Pad()
+print('client opened a virtual pad on ' + pad.bus_name)
+pad.close()
+"@
 }
 
 function Get-VJoyCaps {

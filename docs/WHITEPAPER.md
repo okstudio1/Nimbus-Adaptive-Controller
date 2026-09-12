@@ -43,7 +43,7 @@ This paper documents how that pipeline is constructed, what design choices it em
 
 ## 3. System Overview
 
-Nimbus is a Python 3.8+ application built on PySide6 (Qt 6) with a Qt Quick (QML) presentation layer and a small Python core. It links to one of two virtual-driver bindings — `pyvjoy` for vJoy and `vgamepad` for ViGEm — and exposes its runtime to QML through a single bridge object.
+Nimbus is a Python 3.8+ application built on PySide6 (Qt 6) with a Qt Quick (QML) presentation layer and a small Python core. It drives one of two virtual drivers, vJoy through `pyvjoy` and ViGEmBus through its own pure-Python bus client (`src/padbus_client.py`), and exposes its runtime to QML through a single bridge object.
 
 ```
    ┌──────────────────────────────────────────────────────────────┐
@@ -128,7 +128,7 @@ The bridge maintains, per axis, a target value updated by the QML layer at the u
 
 ### 4.6 Driver Emission
 
-The smoothed, curved, deadzoned value — still in normalised `[-1, 1]` form — is mapped onto the driver's integer axis range and submitted via `pyvjoy.VJoyDevice.set_axis()` or `vgamepad.VX360Gamepad.left_joystick_float()`. Buttons are submitted as boolean state changes; toggle-mode buttons are debounced at the QML layer before reaching the bridge.
+The smoothed, curved, deadzoned value, still in normalised `[-1, 1]` form, is mapped onto the driver's integer axis range and submitted via `pyvjoy.VJoyDevice.set_axis()` or `X360Pad.left_joystick_float()` from `src/padbus_client.py`. Buttons are submitted as boolean state changes; toggle-mode buttons are debounced at the QML layer before reaching the bridge.
 
 ### 4.7 Failsafe
 
@@ -191,7 +191,7 @@ Layouts are persisted on every meaningful state change — widget move, widget r
 
 ## 6. Output Backends
 
-Nimbus supports two virtual controller drivers. The choice is per-profile and is auto-selected from the profile's declared `layout_type`. Profiles of type `xbox`, `adaptive`, or `custom` route through ViGEm — these are layouts a user is most likely to point at modern XInput-only titles — while `flight_sim` profiles route through vJoy, since flight and ground-control software depends on the larger DirectInput axis and button budget. The user can override the auto-selection at any time from the status ribbon, and `controller.prefer_vigem` in the config is consulted as a tiebreaker; vJoy is also used as a fallback when the `vgamepad` package or the ViGEmBus driver is absent.
+Nimbus supports two virtual controller drivers. The choice is per-profile and is auto-selected from the profile's declared `layout_type`. Profiles of type `xbox`, `adaptive`, or `custom` route through ViGEm (these are layouts a user is most likely to point at modern XInput-only titles), while `flight_sim` profiles route through vJoy, since flight and ground-control software depends on the larger DirectInput axis and button budget. The user can override the auto-selection at any time from the status ribbon, and `controller.prefer_vigem` in the config is consulted as a tiebreaker; vJoy is also used as a fallback when the ViGEmBus driver is absent.
 
 ### 6.1 vJoy (DirectInput)
 
@@ -314,7 +314,7 @@ The platform is positioned to extend in four directions, each preserving the sam
 
 Nimbus is distributed in three forms:
 
-- **Source.** `python run.py` bootstraps a virtual environment, installs dependencies (PySide6, pyvjoy, vgamepad, numpy, keyring, httpx, sentry-sdk), and launches the QML app. All Win32 integration uses the standard-library `ctypes` module — there is no `pywin32` dependency, by design.
+- **Source.** `python run.py` bootstraps a virtual environment, installs dependencies (PySide6, pyvjoy, numpy, keyring, httpx, sentry-sdk), and launches the QML app. All Win32 integration uses the standard-library `ctypes` module. There is no `pywin32` dependency, by design.
 - **Portable executable.** A single-file PyInstaller build with all assets and dependencies bundled.
 - **Installer.** An NSIS installer that detects existing vJoy and ViGEmBus installations (via 64-bit registry views), creates Start Menu shortcuts, and launches the application post-install at the user's privilege level rather than the installer's elevated level.
 

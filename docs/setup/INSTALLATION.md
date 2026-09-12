@@ -6,7 +6,7 @@
 - Nothing else. The installer includes both controller drivers and installs whichever one is missing:
   - **vJoy 2.1.9.1** for DirectInput profiles ([source](https://github.com/jshafer817/vJoy); newer 2.2.x builds do not load on Windows 11)
   - **ViGEmBus 1.22.0** for Xbox 360 profiles and Game Mode ([source](https://github.com/nefarius/ViGEmBus))
-- Running from source instead? `pip install vgamepad` brings its own ViGEmBus copy, and vJoy has to be installed by hand from the link above.
+- Running from source instead? Install both drivers by hand from the links above, or run the installer once (it leaves the drivers in place if Nimbus is uninstalled). The app talks to ViGEmBus directly through `src/padbus_client.py` and needs no client package.
 
 ## Installing Nimbus Adaptive Controller
 

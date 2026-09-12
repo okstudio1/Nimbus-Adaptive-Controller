@@ -187,6 +187,7 @@ docs/
 ├── vision/                      # Research and plans
 │   ├── HOST_MODE_ISOLATION.md   # Raw Input tier: options, Windows measurements, prior art
 │   ├── WINDOWS_MOUSE_FILTER_PLAN.md  # The kernel filter design and status
+│   ├── PAD_BUS_FORK_PLAN.md     # Forking and modernizing ViGEmBus; the client first, the driver on a gate
 │   └── LINUX_PROBE_PLAN.md      # The Linux EVIOCGRAB experiment
 ├── setup/                       # Installation & configuration
 │   ├── INSTALLATION.md          # Install guide, vJoy setup
