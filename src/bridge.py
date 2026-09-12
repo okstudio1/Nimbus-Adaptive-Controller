@@ -146,6 +146,14 @@ except Exception:
 # plain pulse against the active Xbox-style interface.
 _USE_MOUSE_HIDER = sys.platform == "win32"
 
+# Mouse isolation has two bridge-side implementations in this file. Windows
+# drives the real cursor from the filter's packets (the cursor relay); every
+# other platform draws its own cursor and synthesises Qt events. This flag
+# picks one at each entry point, because defining the methods twice and
+# letting the later definition win is how the Windows relay silently became
+# dead code once already.
+_ISO_CURSOR_RELAY = sys.platform == "win32"
+
 # Mouse isolation: the physical mouse is taken away from every other
 # application. Windows uses the Nimbus Mouse Filter driver plus the cursor
 # relay (src/mouse_isolation_win.py), and its flag is True only when the
@@ -2440,13 +2448,91 @@ class ControllerBridge(QObject):
     # Linux branch uses the same names with an evdev grab and a software cursor.
     # =================================================================
 
+    # ---- Mouse isolation: one API, two implementations -------------------
+    #
+    # Each entry point picks the relay (Windows) or the software cursor
+    # (everything else). The implementations are the ``_relay`` and ``_sw``
+    # methods further down; nothing outside this block should call them
+    # directly, so a caller cannot accidentally bind the wrong platform.
+
     def _get_iso_active(self) -> bool:
-        return bool(self._iso_active)
+        if _ISO_CURSOR_RELAY:
+            return self._get_iso_active_relay()
+        return self._get_iso_active_sw()
 
     mouseIsolationActive = Property(bool, _get_iso_active, notify=mouseIsolationChanged)
 
     @Slot(result=bool)
     def isMouseIsolationAvailable(self) -> bool:  # noqa: N802
+        if _ISO_CURSOR_RELAY:
+            return self._iso_available_relay()
+        return self._iso_available_sw()
+
+    @Slot(result=bool)
+    def isMouseIsolationActive(self) -> bool:  # noqa: N802
+        if _ISO_CURSOR_RELAY:
+            return self._iso_is_active_relay()
+        return self._iso_is_active_sw()
+
+    @Slot(result=bool)
+    def startMouseIsolation(self) -> bool:  # noqa: N802
+        if _ISO_CURSOR_RELAY:
+            return self._iso_start_relay()
+        return self._iso_start_sw()
+
+    def _start_isolation(self, nodes=None) -> bool:
+        """Start isolation. ``nodes`` is the Linux device list; the relay
+        takes none, because the filter driver owns every mouse."""
+        if _ISO_CURSOR_RELAY:
+            return self._start_isolation_relay()
+        return self._start_isolation_sw(nodes)
+
+    @Slot()
+    def stopMouseIsolation(self) -> None:  # noqa: N802
+        if _ISO_CURSOR_RELAY:
+            self._iso_stop_relay()
+        else:
+            self._iso_stop_sw()
+
+    def _iso_send_mouse(self, ev_type, button) -> None:
+        if _ISO_CURSOR_RELAY:
+            self._iso_send_mouse_relay(ev_type, button)
+        else:
+            self._iso_send_mouse_sw(ev_type, button)
+
+    @Slot(int, int)
+    def _on_iso_motion(self, dx: int, dy: int) -> None:
+        if _ISO_CURSOR_RELAY:
+            self._on_iso_motion_relay(dx, dy)
+        else:
+            self._on_iso_motion_sw(dx, dy)
+
+    @Slot(int, bool)
+    def _on_iso_button(self, code: int, pressed: bool) -> None:
+        if _ISO_CURSOR_RELAY:
+            self._on_iso_button_relay(code, pressed)
+        else:
+            self._on_iso_button_sw(code, pressed)
+
+    @Slot(int, int)
+    def _on_iso_wheel(self, horizontal: int, vertical: int) -> None:
+        if _ISO_CURSOR_RELAY:
+            self._on_iso_wheel_relay(horizontal, vertical)
+        else:
+            self._on_iso_wheel_sw(horizontal, vertical)
+
+    @Slot(str)
+    def _on_iso_stopped(self, reason: str) -> None:
+        if _ISO_CURSOR_RELAY:
+            self._on_iso_stopped_relay(reason)
+        else:
+            self._on_iso_stopped_sw(reason)
+
+    def _get_iso_active_relay(self) -> bool:
+        return bool(self._iso_active)
+
+
+    def _iso_available_relay(self) -> bool:  # noqa: N802
         """True when the isolation driver is installed and attached to a mouse."""
         if not MOUSE_ISOLATION_AVAILABLE or not _mouse_isolation:
             return False
@@ -2455,12 +2541,10 @@ class ControllerBridge(QObject):
         except Exception:
             return False
 
-    @Slot(result=bool)
-    def isMouseIsolationActive(self) -> bool:  # noqa: N802
+    def _iso_is_active_relay(self) -> bool:  # noqa: N802
         return bool(self._iso_active)
 
-    @Slot(result=bool)
-    def startMouseIsolation(self) -> bool:  # noqa: N802
+    def _iso_start_relay(self) -> bool:  # noqa: N802
         """Take the physical mouse away from every other application.
 
         On Windows the real cursor keeps working (cursor relay) and the game,
@@ -2470,7 +2554,7 @@ class ControllerBridge(QObject):
         """
         return self._start_isolation()
 
-    def _start_isolation(self) -> bool:
+    def _start_isolation_relay(self) -> bool:
         if not MOUSE_ISOLATION_AVAILABLE or not _mouse_isolation:
             print("[bridge] mouse isolation: driver not available")
             return False
@@ -2522,8 +2606,7 @@ class ControllerBridge(QObject):
             return bool(cx or cy) and _mouse_isolation.set_cursor_position(cx, cy)
         return False
 
-    @Slot()
-    def stopMouseIsolation(self) -> None:  # noqa: N802
+    def _iso_stop_relay(self) -> None:  # noqa: N802
         """Give the physical mouse back (no-op when inactive)."""
         iso = self._iso
         if iso is not None and iso.active:
@@ -2554,7 +2637,7 @@ class ControllerBridge(QObject):
     def _iso_cursor_over_nimbus(self) -> bool:
         return bool(self._iso_nimbus_hwnd) and _mouse_isolation.hwnd_at_cursor() == self._iso_nimbus_hwnd
 
-    def _iso_send_mouse(self, ev_type, button) -> None:
+    def _iso_send_mouse_relay(self, ev_type, button) -> None:
         """Deliver a synthetic mouse event to our window at the real cursor position."""
         if self._window is None:
             return
@@ -2564,8 +2647,7 @@ class ControllerBridge(QObject):
                          Qt.KeyboardModifier.NoModifier)
         QCoreApplication.sendEvent(self._window, ev)
 
-    @Slot(int, int)
-    def _on_iso_motion(self, dx: int, dy: int) -> None:
+    def _on_iso_motion_relay(self, dx: int, dy: int) -> None:
         # The relay already moved the real cursor on the reader thread, and Qt
         # receives the ordinary hover moves for it. Only a synthetic button
         # that is still held needs move events, so the pressed widget keeps
@@ -2573,8 +2655,7 @@ class ControllerBridge(QObject):
         if self._iso_active and self._iso_buttons != Qt.MouseButton.NoButton:
             self._iso_send_mouse(QEvent.Type.MouseMove, Qt.MouseButton.NoButton)
 
-    @Slot(int, bool)
-    def _on_iso_button(self, code: int, pressed: bool) -> None:
+    def _on_iso_button_relay(self, code: int, pressed: bool) -> None:
         if not self._iso_active:
             return
         button = _ISO_BUTTON_MAP.get(int(code))
@@ -2606,8 +2687,7 @@ class ControllerBridge(QObject):
             self._iso_buttons &= ~button
             self._iso_send_mouse(QEvent.Type.MouseButtonRelease, button)
 
-    @Slot(int, int)
-    def _on_iso_wheel(self, horizontal: int, vertical: int) -> None:
+    def _on_iso_wheel_relay(self, horizontal: int, vertical: int) -> None:
         if not self._iso_active or self._window is None:
             return
         if not self._iso_cursor_over_nimbus():
@@ -2621,8 +2701,7 @@ class ControllerBridge(QObject):
                          Qt.ScrollPhase.NoScrollPhase, False)
         QCoreApplication.sendEvent(self._window, ev)
 
-    @Slot(str)
-    def _on_iso_stopped(self, reason: str) -> None:
+    def _on_iso_stopped_relay(self, reason: str) -> None:
         if not self._iso_active:
             return
         # Release any synthetic button still held so widgets do not stick
@@ -2676,7 +2755,7 @@ class ControllerBridge(QObject):
     # Mouse Isolation (Linux): grab the physical mouse, software cursor
     # =================================================================
 
-    def _get_iso_active(self) -> bool:
+    def _get_iso_active_sw(self) -> bool:
         return bool(self._iso_active)
 
     def _get_iso_x(self) -> float:
@@ -2685,12 +2764,10 @@ class ControllerBridge(QObject):
     def _get_iso_y(self) -> float:
         return float(self._iso_y)
 
-    mouseIsolationActive = Property(bool, _get_iso_active, notify=mouseIsolationChanged)
     isolationCursorX = Property(float, _get_iso_x, notify=isolationCursorMoved)
     isolationCursorY = Property(float, _get_iso_y, notify=isolationCursorMoved)
 
-    @Slot(result=bool)
-    def isMouseIsolationAvailable(self) -> bool:  # noqa: N802
+    def _iso_available_sw(self) -> bool:  # noqa: N802
         """True on Linux when at least one pointer device is present."""
         if not MOUSE_ISOLATION_AVAILABLE or not _mouse_isolation:
             return False
@@ -2711,12 +2788,10 @@ class ControllerBridge(QObject):
         except Exception:
             return "[]"
 
-    @Slot(result=bool)
-    def isMouseIsolationActive(self) -> bool:  # noqa: N802
+    def _iso_is_active_sw(self) -> bool:  # noqa: N802
         return bool(self._iso_active)
 
-    @Slot(result=bool)
-    def startMouseIsolation(self) -> bool:  # noqa: N802
+    def _iso_start_sw(self) -> bool:  # noqa: N802
         """Grab every physical pointer device and drive a software cursor.
 
         The desktop pointer freezes (games, and the X server, stop receiving
@@ -2725,7 +2800,7 @@ class ControllerBridge(QObject):
         """
         return self._start_isolation(None)
 
-    def _start_isolation(self, nodes) -> bool:
+    def _start_isolation_sw(self, nodes) -> bool:
         if not MOUSE_ISOLATION_AVAILABLE or not _mouse_isolation:
             print("[bridge] mouse isolation is only available on Linux")
             return False
@@ -2762,8 +2837,7 @@ class ControllerBridge(QObject):
         self.mouseIsolationChanged.emit(True)
         return True
 
-    @Slot()
-    def stopMouseIsolation(self) -> None:  # noqa: N802
+    def _iso_stop_sw(self) -> None:  # noqa: N802
         """Release the physical mouse grab (no-op when inactive)."""
         iso = self._iso
         if iso is not None and iso.active:
@@ -2816,7 +2890,7 @@ class ControllerBridge(QObject):
         self._iso_y = min(max(0.0, float(y)), h - 1.0)
         self.isolationCursorMoved.emit(self._iso_x, self._iso_y)
 
-    def _iso_send_mouse(self, ev_type, button) -> None:
+    def _iso_send_mouse_sw(self, ev_type, button) -> None:
         target = self._iso_retarget()
         if target is None:
             return
@@ -2826,16 +2900,14 @@ class ControllerBridge(QObject):
                          Qt.KeyboardModifier.NoModifier)
         QCoreApplication.sendEvent(target, ev)
 
-    @Slot(int, int)
-    def _on_iso_motion(self, dx: int, dy: int) -> None:
+    def _on_iso_motion_sw(self, dx: int, dy: int) -> None:
         if not self._iso_active:
             return
         speed = float(self._config.get("controller.isolation_cursor_speed", 1.0))
         self._iso_set_cursor(self._iso_x + dx * speed, self._iso_y + dy * speed)
         self._iso_send_mouse(QEvent.Type.MouseMove, Qt.MouseButton.NoButton)
 
-    @Slot(int, bool)
-    def _on_iso_button(self, code: int, pressed: bool) -> None:
+    def _on_iso_button_sw(self, code: int, pressed: bool) -> None:
         if not self._iso_active:
             return
         button = _ISO_BUTTON_MAP.get(int(code))
@@ -2855,8 +2927,7 @@ class ControllerBridge(QObject):
             self._iso_buttons &= ~button
             self._iso_send_mouse(QEvent.Type.MouseButtonRelease, button)
 
-    @Slot(int, int)
-    def _on_iso_wheel(self, horizontal: int, vertical: int) -> None:
+    def _on_iso_wheel_sw(self, horizontal: int, vertical: int) -> None:
         if not self._iso_active or self._window is None:
             return
         local = QPointF(self._iso_x, self._iso_y)
@@ -2866,8 +2937,7 @@ class ControllerBridge(QObject):
                          Qt.ScrollPhase.NoScrollPhase, False)
         QCoreApplication.sendEvent(self._window, ev)
 
-    @Slot(str)
-    def _on_iso_stopped(self, reason: str) -> None:
+    def _on_iso_stopped_sw(self, reason: str) -> None:
         if not self._iso_active:
             return
         # Release any synthetic button still held so widgets do not stick
