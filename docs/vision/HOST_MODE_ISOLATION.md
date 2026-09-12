@@ -96,6 +96,8 @@ The mechanism is confirmed sound and the signing path is open, but the blocker t
 
 ## 5. The Linux host question
 
+> **Update (2026-09):** one of the two claims below has moved from reasoning to measurement, the other has not. The gamepad-output half — vgamepad's Linux `uinput` backend as a drop-in replacement for ViGEmBus — is independently verified end-to-end: raw evdev reads, SDL2/pygame, the browser Gamepad API, mouse input through the actual QML widgets, and a live Steam/Proton game (button glyphs switching from keyboard to Xbox icons, menu navigation responding correctly). See [`docs/setup/INSTALLATION.md`](../setup/INSTALLATION.md#linux-installation). The mouse-isolation half (`EVIOCGRAB`, Probe 1 below) is a separate, independent claim — unmerged branch work reports it passing against Elden Ring under EAC, but that has not been independently reviewed or reproduced here. Don't conflate the two: one is checked, one is reported.
+
 A Linux host is worth separating out, because it is interesting for a reason that has nothing to do with virtualization. **Linux doesn't isolate the game from the mouse. It lets Nimbus take the mouse away from everything else.** That is the same outcome by a much shorter route, and it means the VM was never the point.
 
 ### Two distinct Linux architectures
@@ -115,7 +117,7 @@ L1 dominates, and L2 is close to pointless on inspection: the games that would f
 | `window_utils.py`: `WS_EX_NOACTIVATE` focus juggling | Largely delete. Wayland clients cannot steal focus the way Win32 windows can. |
 | `mouse_hider.py` | Delete. |
 | `vjoy_interface.py` (pyvjoy, requires vJoy driver) | `uinput` virtual device. Kernel module already present on every distro. |
-| `vigem_interface.py` (vgamepad, requires ViGEmBus) | **vgamepad already ships a Linux backend** built on evdev/uinput, same Python API. |
+| `vigem_interface.py` (vgamepad, requires ViGEmBus) | **vgamepad already ships a Linux backend** built on evdev/uinput, same Python API. **Verified**, not just architecturally true — see the update note above. |
 | **Option F: signed kernel filter driver, EV cert, bricking risk** | **`InputDevice.grab()`. One line.** |
 
 That last row is the finding. The single highest-effort item on the Windows roadmap, a kernel-mode mouse class filter driver with a $300 to $600/yr code-signing certificate, is a standard library call on Linux.
@@ -125,7 +127,7 @@ The port is also smaller than it looks. PySide6, QML, `bridge.py`, `config.py`, 
 ### Real friction, honestly
 
 1. **Wayland's isolation cuts both ways.** The same strict client separation that kills the input leak also blocks an always-on-top overlay from positioning itself. `Qt.WindowStaysOnTopHint` does not work on KWin Wayland, and `move()`/`setGeometry()` are not honored. You need `layer-shell-qt` or KWindowSystem, and behavior varies by compositor (GNOME/Mutter notably does not implement layer-shell). For an app whose entire form factor is a floating panel beside a game, this is the main porting tax and it is not trivial.
-2. **vgamepad's Linux backend is marked experimental.** Buttons and axes work with the same API; rumble and LEDs are Windows-only and not yet ported.
+2. **vgamepad's Linux backend is marked experimental upstream, but the part Nimbus uses works.** Buttons and axes — everything `ViGEmInterface` calls — are confirmed correct end-to-end (see the update note above); rumble and LEDs are Windows-only and not yet ported, but Nimbus never calls them, so this doesn't currently cost anything.
 3. **Anti-cheat is opt-in, not solved.** EAC has supported Proton since 2021, but each developer must enable it. Enabled: **Elden Ring**, Halo MCC, Dead by Daylight, THE FINALS, Squad. Declined: Fortnite, Apex Legends. Vanguard (Valorant, League) is a hard no on Linux. So the competitive-shooter tier stays closed, just for a commercial reason rather than a technical one.
 4. **Market fit.** Windows is where the users are, and "accessibility user running Arch" is a small intersection. This is the genuine strategic cost, and it is larger than any of the technical ones.
 
