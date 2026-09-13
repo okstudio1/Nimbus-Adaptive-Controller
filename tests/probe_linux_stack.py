@@ -131,32 +131,53 @@ def probe_output_backends():
 
 # ---------------------------------------------------------------- C
 
-def _read_last_abs(node, timeout=0.4):
-    """Read pending events from a device node, returning the last ABS values."""
+def _wait_for_readable(node, timeout=2.0):
+    """Wait for udev to finish granting read access to a just-created node.
+
+    The kernel publishes the event node as soon as ``UI_DEV_CREATE`` returns,
+    but the ``uaccess`` ACL is applied afterwards by udev processing the event.
+    On this machine that lands ~50 ms later, so a read opened immediately after
+    device creation loses a race it looks like a permission failure.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if os.access(node, os.R_OK):
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def _open_abs_reader(node):
+    """Open one evdev client on ``node``, to be held across a whole sequence.
+
+    An evdev client only receives events generated after it opens the node, so
+    a reader opened per step sees nothing the step just emitted. Raises
+    ``OSError`` if the node cannot be opened: that is a different finding from
+    a device that reported no events, and collapsing the two reports a
+    permission problem as ``ABS_X = None``.
+    """
+    return os.open(node, os.O_RDONLY | os.O_NONBLOCK)
+
+
+def _read_last_abs(fd, timeout=0.15):
+    """Drain what an open reader has buffered, returning the last ABS values."""
     from src.uinput_interface import _INPUT_EVENT
     EV_ABS = 0x03
     seen = {}
-    try:
-        fd = os.open(node, os.O_RDONLY | os.O_NONBLOCK)
-    except OSError:
-        return seen
     size = _INPUT_EVENT.size
     deadline = time.time() + timeout
-    try:
-        while time.time() < deadline:
-            try:
-                data = os.read(fd, size * 64)
-            except BlockingIOError:
-                time.sleep(0.01)
-                continue
-            if not data:
-                break
-            for i in range(0, len(data) - size + 1, size):
-                _s, _us, etype, code, value = _INPUT_EVENT.unpack(data[i:i + size])
-                if etype == EV_ABS:
-                    seen[code] = value
-    finally:
-        os.close(fd)
+    while time.time() < deadline:
+        try:
+            data = os.read(fd, size * 64)
+        except BlockingIOError:
+            time.sleep(0.01)
+            continue
+        if not data:
+            break
+        for i in range(0, len(data) - size + 1, size):
+            _s, _us, etype, code, value = _INPUT_EVENT.unpack(data[i:i + size])
+            if etype == EV_ABS:
+                seen[code] = value
     return seen
 
 
@@ -178,17 +199,22 @@ def probe_pulse_cannot_undo_a_release():
         skip("pulse checks", "the pad did not open; see section A")
         return False
     node = pad.device.event_node
+    fd = None
     try:
+        if not _wait_for_readable(node):
+            skip("pulse checks", f"udev did not grant read access to {node}; see section A")
+            return False
+        fd = _open_abs_reader(node)
         for name in ("emit_left_stick_transient", "restore_left_stick", "pulse_left_stick"):
             check(f"the pad exposes {name}", hasattr(pad, name))
 
         pad.set_left_stick(0.6, 0.0)
         time.sleep(0.05)
-        _read_last_abs(node)                      # drain
+        _read_last_abs(fd)                        # drain
 
         pad.pulse_left_stick(0.08, 0.0)
         time.sleep(0.05)
-        after = _read_last_abs(node)
+        after = _read_last_abs(fd)
         check("a pulse leaves the commanded value untouched",
               abs(pad.current_values["left_x"] - 0.6) < 1e-6,
               f"current_values left_x = {pad.current_values['left_x']}")
@@ -200,7 +226,7 @@ def probe_pulse_cannot_undo_a_release():
         pad.set_left_stick(0.0, 0.0)
         pad.pulse_left_stick(0.08, 0.0)
         time.sleep(0.05)
-        after = _read_last_abs(node)
+        after = _read_last_abs(fd)
         check("after a release, a later pulse leaves the stick centred",
               after.get(ABS_X) == 0, f"kernel ABS_X = {after.get(ABS_X)}")
 
@@ -209,10 +235,12 @@ def probe_pulse_cannot_undo_a_release():
         pad.set_left_stick(0.0, 0.0)              # the user lets go
         controller_pulse._send_burst(pad, count=2, delay=0)
         time.sleep(0.05)
-        after = _read_last_abs(node)
+        after = _read_last_abs(fd)
         check("a burst after a release re-centres rather than restoring the old value",
               after.get(ABS_X) == 0, f"kernel ABS_X = {after.get(ABS_X)}")
     finally:
+        if fd is not None:
+            os.close(fd)
         try:
             pad.shutdown()
         except Exception:
