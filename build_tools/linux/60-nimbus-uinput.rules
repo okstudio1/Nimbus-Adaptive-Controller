@@ -1,0 +1,30 @@
+# Nimbus Adaptive Controller: let the logged-in user create virtual controllers
+# through the kernel uinput module. Steam ships an equivalent rule
+# (60-steam-input.rules); install this one only if Steam is not installed.
+#
+#   sudo cp build_tools/linux/60-nimbus-uinput.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload
+#   sudo udevadm trigger --name-match=uinput
+#   sudo udevadm trigger --subsystem-match=input
+#
+# Two triggers, not one: udevadm ANDs its match filters and uinput is in the
+# misc subsystem, so asking for both at once matches nothing and says nothing.
+#
+# "uaccess" grants an ACL to the active seat's user (systemd-logind). The
+# group/mode fallback covers systems without logind: add your user to the
+# "input" group (sudo usermod -aG input $USER) and log back in.
+KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", TAG+="uaccess", OPTIONS+="static_node=uinput"
+
+# Reading back the devices Nimbus creates. The rule above only covers
+# /dev/uinput (writing); the event node the kernel then hands out is
+# root:input 0660, so the diagnostics in tests/ cannot verify what they just
+# wrote without help. Tag Nimbus's own virtual devices with "uaccess" so the
+# active seat's user can read them, instead of joining the "input" group,
+# which grants read access to every keyboard on the machine.
+#
+# The Xbox pad deliberately reuses Microsoft's name and VID/PID so SDL's
+# gamecontrollerdb maps it, so this line also matches a real Xbox 360 pad.
+# That is the same access Steam already grants its own controllers.
+SUBSYSTEM=="input", ATTRS{name}=="Nimbus Virtual Joystick", TAG+="uaccess"
+SUBSYSTEM=="input", ATTRS{name}=="Microsoft X-Box 360 pad", TAG+="uaccess"
+SUBSYSTEM=="input", ATTRS{name}=="Nimbus Probe Mouse", TAG+="uaccess"

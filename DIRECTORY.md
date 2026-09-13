@@ -34,6 +34,9 @@ Python backend — Qt/QML bridge, configuration, hardware interfaces.
 | `config.py` | Configuration manager — profiles, settings, JSON persistence |
 | `vjoy_interface.py` | vJoy driver communication — axis/button output |
 | `vigem_interface.py` | ViGEm Xbox controller emulation (optional) |
+| `uinput_interface.py` | Linux `uinput` back ends: Xbox 360 pad + 8-axis joystick (stand-ins for ViGEm/vJoy) |
+| `controller_pulse.py` | Driver-agnostic controller keep-alive pulse (controller mode off Windows) |
+| `mouse_isolation.py` | Linux `EVIOCGRAB` of the physical mouse + keyboard pass-through (Mouse Isolation) |
 | `qt_dialogs.py` | Native Qt dialogs — Joystick Settings, Button Settings, Axis Mapping |
 | `qt_widgets.py` | Custom Qt widget components |
 | `borderless.py` | Borderless window mode + ClipCursor release (Windows) |
@@ -52,6 +55,7 @@ Python backend — Qt/QML bridge, configuration, hardware interfaces.
 - **`ControllerBridge`** (`bridge.py`) — Singleton exposed to QML as `controller`. All QML↔Python communication goes through here.
 - **`ControllerConfig`** (`config.py`) — Profile management, settings persistence, sensitivity curve calculations.
 - **`VJoyInterface`** (`vjoy_interface.py`) — Low-level vJoy API wrapper.
+- **`UInputXboxInterface` / `UInputJoystickInterface`** (`uinput_interface.py`) — Linux equivalents of ViGEm/vJoy over `/dev/uinput`, same method names.
 - **`TelemetryClient`** (`telemetry.py`) — Opt-in event tracking with local buffer and batch HTTP flush.
 - **`CloudClient`** (`cloud_client.py`) — Supabase auth, OAuth, token vault, profile sync.
 - **`UpdateChecker`** (`updater.py`) — Background version manifest fetch with QML signal integration.
@@ -136,6 +140,7 @@ Everything needed to package and distribute the app.
 | `Project-Nimbus.spec` | PyInstaller spec — defines bundling, paths, hidden imports |
 | `launcher.py` | Entry point for frozen executable |
 | `installer.nsi` | NSIS installer script: wizard, shortcuts, version detection, bundled vJoy and ViGEmBus install |
+| `linux/60-nimbus-uinput.rules` | udev rule for Linux: write access to `/dev/uinput`, plus `uaccess` on the event nodes of Nimbus's own virtual devices so they can be read back |
 | `fetch_redist.ps1` | Downloads the vJoy and ViGEmBus setups the installer bundles, pinned by SHA-256 and publisher signature, into the gitignored `redist/`. Run before `makensis` |
 | `sign_exe.bat` | Code signing script (EV certificate) |
 | `Project-Nimbus.ico` | Application icon (multi-resolution) |
@@ -218,8 +223,7 @@ docs/
 
 | Directory | Purpose |
 |-----------|---------|
-| `tests/` | vJoy diagnostics plus Windows input probes: `probe_rawinput_windows.py` (which countermeasures stop `WM_INPUT`), `probe_game_mouselook_windows.py` (in-game camera motion), `probe_mouse_filter_windows.py` (the kernel filter), `probe_mouse_filter_stress_windows.py` (the filter's battle test: storms, floods, process chaos, CPU starvation, an API fuzz, a soak), `probe_nimbus_relay_windows.py` (the real app in Full Game Mode with the cursor relay), `probe_installer_drivers_windows.ps1` (the installer's vJoy and ViGEmBus bootstrap, unattended after one elevation), `test_stick_shaping.py` (property checks on the stick shaping formula, no hardware), `probe_stick_shaping_windows.py` (the real app driven by synthesized pointer events, reading what reached ViGEm), `probe_game_deadzone_windows.py` (a running game's real stick deadzone, and whether a 1 px Nimbus drag clears it), `game_harness.py` and `probe_game_harness_windows.py` (the game test harness: launches a game from a recipe in `games/`, owns the pad, reads ground truth from a Source console or frame differencing, calibrates the game, runs the real app end to end, and measures the Spectator+ primitives; recipes for `left4dead2`, `halflife2`, `eldenring` and `powerwashsimulator`; `docs/vision/GAME_TEST_HARNESS.md`) |
-| `research/` | Research notes, reference materials |
+| `tests/` | vJoy diagnostics plus Windows input probes: `probe_rawinput_windows.py` (which countermeasures stop `WM_INPUT`), `probe_game_mouselook_windows.py` (in-game camera motion), `probe_mouse_filter_windows.py` (the kernel filter), `probe_mouse_filter_stress_windows.py` (the filter's battle test: storms, floods, process chaos, CPU starvation, an API fuzz, a soak), `probe_nimbus_relay_windows.py` (the real app in Full Game Mode with the cursor relay), `probe_installer_drivers_windows.ps1` (the installer's vJoy and ViGEmBus bootstrap, unattended after one elevation), `test_stick_shaping.py` (property checks on the stick shaping formula, no hardware), `probe_stick_shaping_windows.py` (the real app driven by synthesized pointer events, reading what reached ViGEm), `probe_game_deadzone_windows.py` (a running game's real stick deadzone, and whether a 1 px Nimbus drag clears it), `game_harness.py` and `probe_game_harness_windows.py` (the game test harness: launches a game from a recipe in `games/`, owns the pad, reads ground truth from a Source console or frame differencing, calibrates the game, runs the real app end to end, and measures the Spectator+ primitives; recipes for `left4dead2`, `halflife2`, `eldenring` and `powerwashsimulator`; `docs/vision/GAME_TEST_HARNESS.md`). Linux: `test_uinput.py` (round-trips every axis and button through the kernel), `probe_evdev_grab.py` (the EVIOCGRAB mechanism), `probe_game_mouselook.py` (in-game isolation check), `test_linux_input_safety.py` (the pulse-versus-release race and the absolute-pointer refusal, no hardware), `probe_linux_stack.py` (the whole Linux stack against a real kernel: uinput back ends through `ControllerOutput`, the pulse-versus-release property read back from the device's own event node, pointer classification against this machine's devices, and the bridge's platform dispatch), and `run_linux_validation.sh` (one command: the fast suite plus every Linux probe, into a single log). Hardware-free bridge coverage is `test_bridge_services.py` and `test_bridge_no_duplicate_methods.py` (parses `bridge.py` with `ast`, so a method defined twice cannot hide behind the one Python binds), `test_bridge_isolation.py` || `research/` | Research notes, reference materials |
 | `build/` | PyInstaller build cache (gitignored) |
 | `dist/` | Built executables and installers (gitignored) |
 | `venv/` | Python virtual environment (gitignored) |

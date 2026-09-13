@@ -78,3 +78,6 @@ tests/probe_frames/
 
 # ---- Bundled third-party driver setups (fetched by build_tools/fetch_redist.ps1) ----
 build_tools/redist/
+
+# Linux validation logs (tests/run_linux_validation.sh)
+linux-validation-*.log

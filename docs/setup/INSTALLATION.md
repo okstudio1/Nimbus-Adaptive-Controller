@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- **Windows 10/11** (64-bit)
+- **Windows 10/11** (64-bit), or **Linux** (see the [Linux Setup guide](LINUX.md); no driver install needed, the kernel provides uinput)
 - Nothing else. The installer includes both controller drivers and installs whichever one is missing:
   - **vJoy 2.1.9.1** for DirectInput profiles ([source](https://github.com/jshafer817/vJoy); newer 2.2.x builds do not load on Windows 11)
   - **ViGEmBus 1.22.0** for Xbox 360 profiles and Game Mode ([source](https://github.com/nefarius/ViGEmBus))

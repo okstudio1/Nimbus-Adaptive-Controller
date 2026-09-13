@@ -4,12 +4,13 @@
 
 ## Setup & Installation
 - [Installation Guide](setup/INSTALLATION.md) — installer, vJoy setup, prerequisites, troubleshooting
+- [Linux Setup](setup/LINUX.md) — running on Linux: uinput permissions, output modes, Steam/Proton, Wayland notes
 - [Profile System](setup/PROFILES.md) — profile storage, JSON structure, custom layout widget properties
 - [Packaging Guide](setup/PACKAGING.md) — **build & distribute** — PyInstaller, NSIS, code signing, release checklist
 
 ## Borderless Gaming
 - [Game Compatibility](GAME_COMPATIBILITY.md) — verified/likely/partial/incompatible games, tips by genre, how ClipCursor release works
-- [Host Mode & Input Isolation](vision/HOST_MODE_ISOLATION.md) — research on what it would take to support the Raw Input games listed as incompatible
+- [Host Mode & Input Isolation](vision/HOST_MODE_ISOLATION.md) — research on the Raw Input tier; on Linux it is solved by Mouse Isolation (measured in section 5)
 
 ## Architecture
 - [Architecture Overview](architecture/architecture.md) — codebase structure, QML/Python bridge, widget system, borderless module
@@ -34,7 +35,7 @@
 - [Aim Assistance](vision/AIM_ASSISTANCE.md): why aiming is hard, a code audit of the stick pipeline, the assistance options ranked by effort, and the tier 1 build (one radial shaping pass, anti-deadzone, travel, precision modifier) with its five-layer test plan and the measurements against Left 4 Dead 2
 - [Game Test Harness](vision/GAME_TEST_HARNESS.md): automated tests against real games with ground truth from the game's console (Source engine) or frame differencing; recipes, oracles, a pad and a Nimbus actuator, the environment Spectator+ will run in, and the Left 4 Dead 2 calibration
 - [Testing Strategy](vision/TESTING_STRATEGY.md): from liveness checks to regression tests; the fast-test runner and CI, the frame oracle as a motion measurement, windowed games, a console-less reset and expected-value bands, with what the saved frames changed about the design and what the rerun of every game found
-- [Linux Probe Plan](vision/LINUX_PROBE_PLAN.md) — proposed weekend experiment to test EVIOCGRAB + uinput against a real EAC game
+- [Linux Probe Plan](vision/LINUX_PROBE_PLAN.md): the EVIOCGRAB and uinput experiment against a real EAC game. Probe 1 is complete, all four criteria pass against Elden Ring under EAC; Wayland (Probe 2) is still open
 - [Windows Mouse Filter Plan](vision/WINDOWS_MOUSE_FILTER_PLAN.md): the Windows counterpart, a mouclass upper filter that hands the physical mouse to Nimbus, motivated by the Raw Input measurements in section 8 of Host Mode
 - [Pad Bus Fork Plan](vision/PAD_BUS_FORK_PLAN.md): forking and modernizing the archived ViGEmBus into a Nimbus-owned virtual gamepad bus driver; what the driver really does, a pure-Python client that drops the `vgamepad` dependency first, the rename and coexistence inventory, and the anti-cheat gate that decides whether we ever sign it
 - [Nimbus Mouse Filter driver README](../driver/README.md): building, test-signing, and dev-installing the kernel filter (prototype, not in any release)

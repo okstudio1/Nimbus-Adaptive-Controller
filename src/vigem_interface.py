@@ -9,6 +9,7 @@ device interface is present at import (driver installed and started), so a
 machine without ViGEmBus runs in simulation mode, as it always has.
 """
 
+import sys
 import time
 import threading
 from typing import Optional, Dict, Any
@@ -19,9 +20,11 @@ try:
     VIGEM_AVAILABLE = PADBUS_AVAILABLE
     if VIGEM_AVAILABLE:
         print("[OK] Virtual gamepad bus found - Xbox 360 controller emulation available")
-    else:
+    elif sys.platform == "win32":
         print("Warning: no virtual gamepad bus present (ViGEmBus not installed or not started)")
         print("The Nimbus installer includes ViGEmBus; Xbox 360 emulation is off until it is installed")
+    # On Linux the bridge uses uinput, so an absent ViGEmBus is expected and
+    # saying so at every start would be noise.
 except Exception as e:  # pragma: no cover - the client imports anywhere; this is belt and braces
     VIGEM_AVAILABLE = False
     X360Pad = None  # type: ignore[assignment,misc]

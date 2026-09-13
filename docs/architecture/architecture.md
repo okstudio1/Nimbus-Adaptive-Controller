@@ -196,6 +196,27 @@ Xbox 360 controller emulation via ViGEmBus, through the pure-Python bus client i
 - Auto-selected for `xbox`, `adaptive`, and `custom` layout types when available
 - Provides XInput compatibility for games like No Man's Sky
 
+### `UInputXboxInterface` / `UInputJoystickInterface` (`src/uinput_interface.py`)
+
+Linux back ends over the kernel `uinput` module (pure Python: `ioctl` + `struct`, no python-evdev):
+- `UInputXboxInterface` mirrors `ViGEmInterface`'s API and creates a `Microsoft X-Box 360 pad` (xpad VID/PID, so SDL/Steam apply their built-in mapping). Sticks are negated on Y to convert XInput `+Y == up` to evdev `+Y == down`; the D-pad drives `ABS_HAT0X/Y`.
+- `UInputJoystickInterface` mirrors `VJoyInterface`'s API: 8 axes (`ABS_X..ABS_RZ`, `ABS_THROTTLE`, `ABS_RUDDER`) with the vJoy `0..axis_range` scaling, 56 buttons (`BTN_JOYSTICK` block + `BTN_TRIGGER_HAPPY1..40`).
+- The bridge passes them to `ControllerOutput` as the vJoy and ViGEm factories when `UINPUT_AVAILABLE`, so every call site downstream goes through `self._output` and knows nothing about the platform; `XBOX_OUTPUT_AVAILABLE = VIGEM_AVAILABLE or UINPUT_AVAILABLE` is the availability it is constructed with. Only the active device is kept alive on Linux (`_retire_inactive_interface()`).
+- Setup, permissions, and verification: [docs/setup/LINUX.md](../setup/LINUX.md)
+
+### `controller_pulse` (`src/controller_pulse.py`)
+
+Driver-agnostic controller-mode keep-alive, the core of Full Game Mode without the Win32 pieces:
+- `start_controller_mode(interface, pulse_hz, callback)` runs a burst (10 alternating 0.5 deflections + A press) then a 30 Hz 0.08-amplitude left-stick circle. Both go through the interface's transient emit helpers, which never record a value as commanded, so a restore re-emits what the user currently holds rather than what the pulse last read; that is what stops a pulse undoing a release.
+- Works against any interface exposing `set_left_stick` / `set_button` / `current_values` (ViGEm or uinput Xbox). The bridge uses it when `sys.platform != "win32"`; Windows keeps `mouse_hider.py`, which bundles the same pulse with the mouse hook, ClipCursor release, and the emergency hotkey.
+- On X11 the bridge pairs it with `Qt.WindowDoesNotAcceptFocus` on the main window (`_apply_no_focus_flag`) so clicking Nimbus never takes keyboard focus from the game.
+
+### `mouse_isolation` (`src/mouse_isolation.py`)
+
+Linux-only exclusive grab of the physical mouse (`EVIOCGRAB`), the input half of the host-mode research:
+- `list_pointer_devices()` reads `/proc/bus/input/devices` including the `B: REL=`/`B: ABS=` capability masks, and `pointer_support()` declines any pointer whose motion the reader cannot translate, because an exclusive grab on an absolute device such as a touchpad would strand the user with no pointer at all; `MouseIsolation.start()` opens and grabs every pointer node (or a given list), creating a uinput pass-through keyboard for devices that also carry keyboard keys so typing survives. A reader thread coalesces `REL_X/REL_Y` per report and calls `on_motion` / `on_button` / `on_wheel`; `Ctrl+Alt+F12` (seen on grabbed devices, or on other keyboards opened read-only) and any reader error call `stop()`. `stop_all()` is registered with `atexit`; the kernel also drops the grab when the fd closes.
+- The bridge marshals the callbacks through `_IsolationRelay` (queued signals), keeps a software cursor (`isolationCursorX/Y`, drawn by a `Canvas` in `Main.qml`), and delivers synthetic `QMouseEvent`s / `QWheelEvent`s to the QML window with `QCoreApplication.sendEvent`, including X11-style double-click synthesis. `setCursorPos` warps move the software cursor while isolated so the joystick lock mode keeps working.
+- Slots: `isMouseIsolationAvailable`, `getMouseIsolationDevices`, `startMouseIsolation`, `stopMouseIsolation`, `isMouseIsolationActive`; property `mouseIsolationActive`; signal `mouseIsolationChanged`. `startFullGameMode` enables it on Linux unless `controller.game_mode_isolate_mouse` is false.
 ### `X360Pad` (`src/padbus_client.py`)
 
 The virtual pad itself, a pure-ctypes client for the ViGEmBus protocol (no client package, no DLL):
@@ -207,7 +228,7 @@ The virtual pad itself, a pure-ctypes client for the ViGEmBus protocol (no clien
 ### `ControllerBridge` (`src/bridge.py`)
 
 Qt `QObject` exposed to QML as `controller`:
-- Owns `ControllerConfig` + controller interface (VJoy or ViGEm)
+- Owns `ControllerConfig` + controller interface (VJoy or ViGEm on Windows, uinput on Linux)
 - **Properties**: `scaleFactor`, `debugBorders`, `buttonsVersion`, `noFocusMode`
 - **Axis slots**: `setStickInput(widgetId, nx, ny)` and `setAxisInput(widgetId, value)` for custom-layout widgets (shaped from the widget's profile settings); `setLeftStick`, `setRightStick`, `setThrottle`, `setRudder`, `setAxis` for the legacy layouts and macro actions
 - **Shaping helpers**: `setModifier(name, active)` / `isModifierActive` (the precision modifier), `shapeCurve(paramsJson)` and `previewStick(...)` for the config dialog, `defaultAntiDeadzone(axis)`

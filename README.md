@@ -72,7 +72,7 @@ Users build their own controller layout by dragging, dropping, and resizing widg
 - **Proportional Scaling**: All UI elements scale via `controller.scaled()` and View > Size presets; preference persists
 - **Status Display**: vJoy/ViGEm connection status and real-time value monitoring
 - **Keyboard Shortcuts**: ESC to exit, SPACE to center
-- **Game Focus Mode**: Prevents Nimbus Adaptive Controller from stealing focus from games (Windows only)
+- **Game Focus Mode**: Prevents Nimbus Adaptive Controller from stealing focus from games (Windows, and X11 sessions on Linux)
 - **Borderless Gaming**: Auto-detect games, strip window borders, and continuously release cursor lock (View → Borderless Gaming)
 
 ## Accessibility
@@ -128,7 +128,16 @@ When playing games that pause or lose input when unfocused, enable **Game Focus 
 - Works with most games, though some that pause instantly on focus loss may still notice the brief switch
 - Setting is saved and persists across sessions
 
-**Note:** This feature is only available on Windows. On other platforms, the menu option will be disabled.
+**Note:** Available on Windows and on X11 sessions on Linux (where it uses Qt's `WindowDoesNotAcceptFocus` flag). Under Wayland the compositor controls focus, so the menu option is disabled.
+
+## Linux Support
+
+Nimbus runs natively on Linux. The output layer uses the kernel's `uinput` module in place of the vJoy and ViGEmBus drivers, so Steam, Proton, and native games see a regular controller:
+
+- **Xbox 360 gamepad (uinput)** — appears as `Microsoft X-Box 360 pad`; the default for `xbox`, `adaptive`, and `custom` profiles. Works with Steam Input and Proton out of the box.
+- **Generic joystick (uinput)** — 8 axes and 56 buttons for flight sims and emulators.
+
+No driver install and no compiled dependencies. If Steam is installed, `/dev/uinput` access is already granted, which is all the app itself needs; the udev rule in `build_tools/linux/` covers that plus read access to the devices Nimbus creates, which the Linux diagnostics need and Steam's rule does not grant. The **Game Mode** button (controller-mode enforcement) and Game Focus Mode (X11) work on Linux, and **Mouse Isolation** grabs the physical mouse with `EVIOCGRAB` so no game can see it at all, which is the fix for the Raw Input tier that is impossible on Windows (verified with Elden Ring under Easy Anti-Cheat). Borderless Gaming and cursor release remain Windows-only. Full instructions: [docs/setup/LINUX.md](docs/setup/LINUX.md).
 
 ## Roadmap & Vision
 
@@ -183,7 +192,7 @@ The portable `.exe` installs nothing, so it needs the drivers already present. U
 
 #### Prerequisites
 1. **Python 3.8+** - Required for the application
-2. **VJoy Driver** - Download and install from [VJoy Official Site](http://vjoystick.sourceforge.net/)
+2. **VJoy Driver** (Windows) - Download and install from [VJoy Official Site](http://vjoystick.sourceforge.net/). Not needed on Linux, which uses the kernel `uinput` module (see [Linux Setup](docs/setup/LINUX.md)).
 3. **Git** (optional) - For cloning the repository
 
 #### Setup Instructions
@@ -206,7 +215,8 @@ The portable `.exe` installs nothing, so it needs the drivers already present. U
 
 4. **Run the application (Qt Quick UI)**:
    ```bash
-   python run.py
+   python run.py      # Windows
+   ./run.sh           # Linux / macOS
    ```
    
    Notes:

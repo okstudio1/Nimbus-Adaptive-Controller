@@ -12,6 +12,7 @@ It is what CI runs (``.github/workflows/fast-tests.yml``).
 
 Two files that match the pattern are not tests and are skipped by name:
 ``test_vjoy.py`` is a vJoy driver diagnostic that needs a real vJoy
+install, ``test_uinput.py`` is its Linux counterpart and needs ``/dev/uinput``,
 install, and ``test_dialog.py`` is an interactive pygame script for the
 legacy shell. The hardware probes are ``probe_*_windows.py`` and do not
 match the pattern.
@@ -37,6 +38,7 @@ TESTS = os.path.join(REPO, "tests")
 SKIP: Dict[str, str] = {
     "test_vjoy.py": "vJoy driver diagnostic, needs a real vJoy install",
     "test_dialog.py": "interactive pygame script for the legacy shell, not a test",
+    "test_uinput.py": "Linux uinput round-trip diagnostic, needs /dev/uinput",
 }
 PER_FILE_TIMEOUT_S = 600
 

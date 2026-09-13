@@ -247,6 +247,121 @@ The results are in [GAME_TEST_HARNESS.md](GAME_TEST_HARNESS.md) section 8, entry
 - The pixel shift is a rate to band only where it repeats. Two magnitudes on one game repeat so far; the rest of the console-less checks stay liveness checks with a much better idea of what "moved" means.
 - The QML layer is still untested except through the Nimbus actuator's synthesized presses in a game run.
 
+## 9. A bug the suite could not see (2026-09-12)
+
+Merging the Linux branch produced a defect the whole fast suite passed straight
+through, before and after it existed. It is the clearest argument this document
+has for what the suite is actually for, so it is recorded here rather than in a
+commit message.
+
+### 9.1 What happened
+
+`main` and the Linux branch each defined the mouse-isolation slots once, in
+different regions of `bridge.py`. Git merged both sets into the same class body.
+Python binds the **later** definition, silently, so on Windows the Linux
+software-cursor methods overrode the cursor relay and the relay became
+unreachable. Eleven methods, plus the `mouseIsolationActive` property.
+
+Nothing failed. No warning, no error, no test. The suite was green with the
+Windows isolation path dead, because nothing in it exercised that path on either
+platform. It was found by reading the file while working on something else.
+
+### 9.2 Why the existing shape of the suite missed it
+
+Two gaps, and they are different:
+
+- **Structural.** A duplicate definition is invisible to any test that imports
+  the module, because importing only shows the definitions that won. Seeing it
+  requires parsing the source.
+- **Behavioural.** Even with one definition per name, nothing checked that the
+  isolation entry points route to the right implementation, or that synthetic
+  events arrive where they are aimed.
+
+Either gap alone would have hidden this. Closing one would not have closed the
+other, which is why there are now two tests rather than one.
+
+### 9.3 What was added
+
+`tests/test_bridge_no_duplicate_methods.py` parses `bridge.py` with `ast` and
+fails on any method defined twice, excluding property and setter pairs. Its
+`KNOWN` list is empty; adding to it is meant to need a reason, because a
+duplicate always means one of the two bodies is dead.
+
+`tests/test_bridge_isolation.py` drives the bridge's isolation handlers against
+a real offscreen `QWindow`: the dispatch is checked by **running** it for every
+entry point on both platforms, synthetic events are checked to arrive at the
+window that should receive them, a modal dialog is checked to receive them
+instead of the main window, and the cursor is checked to survive a target
+change rather than snapping to a corner.
+
+The guard catches what parsing catches; the functional test catches an entry
+point that calls one implementation unconditionally, which parsing never would.
+
+### 9.4 The rule that came out of it
+
+Both tests were validated by re-introducing the defects they exist for, rather
+than by being written and assumed to work. Removing the dispatch fails two
+named tests; removing the modal targeting fails two others. A test that has
+never failed is a guess about a failure mode, not a check on one.
+
+The same principle applies to `tests/test_linux_input_safety.py`, which covers
+the keep-alive pulse undoing a stick release: it replays the exact interleaving
+from the review rather than asserting that a lock exists.
+
+### 9.5 What this still does not cover
+
+The suite tests the bridge, not the devices. The kernel filter, the evdev grab,
+the pass-through keyboard and the real cursor relay have no automated coverage,
+and a mock can only ever agree with the code that wrote it. That is why
+`tests/probe_linux_stack.py` reads the stick position back out of the kernel
+instead of asserting on `current_values`, and why the hardware probes remain
+something a person runs.
+
+Measured on Windows after the merge, on the dev machine: the pad bus probe
+14/14 against real ViGEmBus, the stick shaping probe 19/19 through the real QML
+app including an output-device switch, and the Left 4 Dead 2 harness 19/19 end
+to end with both `expect` bands matching their pre-merge values (-2.4 deg/s on a
+1 px drag, +200.0 units/s on a full left stick).
+
+### 9.6 What the Linux box found, and what that says about probes
+
+The Linux half ran on 2026-09-12 (Ubuntu 22.04, kernel 6.8). It found four
+things, and only one of them was in the code the probe was aimed at.
+
+- **`src/padbus_client.py` was wrong off Windows.** `ULONG` aliased
+  `ctypes.c_ulong`, which follows the host C ABI and is 8 bytes on LP64, so
+  every ioctl struct came out double width (`XUSB_GET_USER_INDEX` at 24 bytes
+  against 12). Win32 `ULONG` is 32-bit on every target, so the alias is now
+  `c_uint32`: identical bytes on Windows, and `test_padbus_client.py` goes from
+  44 passed with 9 failed to 53 passed on Linux. A fast suite meant to run
+  anywhere had never been run anywhere else.
+- **The shipped udev rule covered only the write side.** It granted
+  `/dev/uinput`, but the event node the kernel then publishes is `root:input
+  0660`, so nothing could read back a device Nimbus had just created without
+  joining the `input` group.
+- **A bridge test asserted Windows lifecycle on every platform.** It is now
+  gated, and on Linux pins the stronger property it was reaching for:
+  `shutdown()` is the only call the bridge may make on a retired interface.
+- **The probe's own section C had never read a single event.** It opened the
+  node fresh on each call, but an evdev client only receives events generated
+  after it opens, so every read drained a buffer filled before it existed; and
+  `except OSError: return seen` collapsed "cannot open" into "reported
+  nothing", so both faults printed as `kernel ABS_X = None`.
+
+That last one is the finding worth keeping. udev applies the `uaccess` ACL
+*after* `UI_DEV_CREATE` has returned, measured at 51 ms against the probe's
+first read at 50 ms, which is why it failed every time rather than
+intermittently and therefore looked like a deterministic code fault rather than
+a race. A probe is code, and it needs the same suspicion as the thing it
+measures: this one would have reported a healthy stack as broken, and the
+reading that mattered was the one it never took.
+
+With it fixed, the pulse claim is checked against a real kernel for the first
+time: a pulse leaves the commanded position at 19660 of 19660, and both release
+paths centre at 0. That is section 9.4's rule arriving from the other
+direction. The test was validated by re-introducing the defect; the probe was
+validated by a kernel disagreeing with it.
+
 ---
 
 ## Related Documents

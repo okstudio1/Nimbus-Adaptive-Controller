@@ -109,7 +109,10 @@ MAX_SERIALS = 16
 #: pad before re-plugging it (the measured gap is tens of milliseconds).
 REPORT_RETRY_S = 0.15
 
-ULONG = ctypes.c_ulong
+# Win32 ULONG is 32-bit everywhere, but ``c_ulong`` follows the host C ABI and
+# widens to 64 bits on LP64 (Linux, macOS). Pinning the width keeps these ioctl
+# structs byte-identical to the driver's on any machine the tests run on.
+ULONG = ctypes.c_uint32
 USHORT = ctypes.c_ushort
 SHORT = ctypes.c_short
 UCHAR = ctypes.c_ubyte
