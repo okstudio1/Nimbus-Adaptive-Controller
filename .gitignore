@@ -69,5 +69,15 @@ TODO.md
 build_tools/CODE_SIGNING.md
 docs/development/LLM_NOTES.md
 
-# ---- Probe frame captures ----
+# Kernel driver build outputs (driver/)
+driver/nimbus_moufilter/x64/
+driver/nimbus_moufilter/ARM64/
+driver/out/
+driver/**/*.log
 tests/probe_frames/
+
+# ---- Bundled third-party driver setups (fetched by build_tools/fetch_redist.ps1) ----
+build_tools/redist/
+
+# Linux validation logs (tests/run_linux_validation.sh)
+linux-validation-*.log

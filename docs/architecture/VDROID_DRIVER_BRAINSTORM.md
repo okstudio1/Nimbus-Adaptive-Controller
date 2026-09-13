@@ -1,5 +1,16 @@
 # VDroid — Custom Virtual Controller Driver Brainstorm
 
+> **Superseded in part, 2026-09-09.** Option C (fork ViGEmBus) is worked out
+> properly in [docs/vision/PAD_BUS_FORK_PLAN.md](../vision/PAD_BUS_FORK_PLAN.md),
+> against a real clone of the upstream source. Two premises below are wrong and
+> the plan corrects them: **(1)** the "8 axes" ceiling is DirectInput's shape
+> (`DIJOYSTATE2`), not vJoy's, so a wider HID device does not give games more
+> axes; **(2)** Options A, B and D (UMDF/KMDF HID, VHF, HID-over-transport)
+> cannot do XInput at all, because `XInput1_4.dll` only sees devices bound to
+> `xusb22.sys`, which binds to the USB compatible ID `USB\MS_COMP_XUSB10`. USB
+> device emulation is the price of XInput. Read the plan before building from
+> this page.
+
 ## The Problem
 
 vJoy provides **8 axes** (X, Y, Z, RX, RY, RZ, SL0, SL1) per virtual device. That means a maximum of **4 two-axis joysticks**. For users who need 5+ joysticks, multiple sliders, and analog controls simultaneously, vJoy becomes the bottleneck — not our software.

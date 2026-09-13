@@ -56,7 +56,9 @@ This mirrors the existing `Ctrl+Alt+F12` emergency stop in Full Game Mode, and t
 
 ### Probe script
 
-Use `src.uinput_interface.UInputXboxInterface` for the pad: it is the real Nimbus code path on Linux now, needs no extra package, and SDL/Steam already recognise it (see Results below). The vgamepad script below is the original plan and still works if `libevdev` is installed.
+> **Note, 2026-09-09, updated on merge:** [vigem_interface.py](../../src/vigem_interface.py) no longer depends on vgamepad; on Windows it goes through `src/padbus_client.py`, whose `X360Pad` keeps vgamepad's method names. The Linux side of that shim now exists: `src.uinput_interface.UInputXboxInterface` is the shipping Linux back end, built by the factory `ControllerOutput` is given.
+
+Use `src.uinput_interface.UInputXboxInterface` for the pad: it is the real Nimbus code path on Linux, needs no extra package, and SDL and Steam already recognise it (see Results below). The vgamepad script below is the original plan and still works if `libevdev` is installed, but it now tests a parallel implementation rather than the shipping one.
 
 ```python
 """Throwaway probe. Not Nimbus code. Grabs the mouse, emits right-stick motion."""
@@ -98,6 +100,11 @@ All four must hold:
 - [ ] **P1.** Moving the physical mouse moves the in-game camera via the right stick.
 - [ ] **P2.** The game's own mouse-look does **not** respond. No double input, no drift. *This is the entire test.* On Windows this is the step that fails.
 - [ ] **P3.** Elden Ring shows Xbox button glyphs, confirming the uinput device is detected as a standard pad.
+      Independently reconfirmed 2026-09 using Nimbus's own production `ViGEmInterface` (not the throwaway probe
+      script above) against Brawlhalla under Proton Experimental: the game's UI switched from keyboard prompts
+      to Xbox glyphs the moment input arrived, and menu navigation responded correctly. P1/P2/P4 — the exclusive
+      mouse grab and EAC's specific reaction — were not part of that verification. See
+      [`docs/setup/INSTALLATION.md`](../setup/INSTALLATION.md#linux-installation).
 - [ ] **P4.** EAC does not complain, refuse to launch, or flag the session.
 
 ### Failure modes and what they mean

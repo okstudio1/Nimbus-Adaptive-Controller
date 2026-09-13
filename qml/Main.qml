@@ -115,6 +115,27 @@ ApplicationWindow {
         function onOutputModeChanged(mode) {
             root.outputMode = mode
         }
+        function onNoUpdateAvailable() {
+            saveNotification.show("Nimbus is up to date")
+        }
+        function onCheckFailed(message) {
+            saveNotification.show("Update check failed")
+        }
+        function onSyncCompleted(success) {
+            saveNotification.show(success ? "Profiles synchronized" : "Profile sync failed")
+        }
+    }
+
+    Comp.AccountDialog {
+        id: accountDialog
+        objectName: "accountDialog"
+    }
+    Comp.SettingsPrivacyDialog {
+        id: privacyDialog
+        objectName: "privacyDialog"
+    }
+    header: Comp.UpdateNotification {
+        objectName: "updateNotification"
     }
     
     // Simple notification popup
@@ -519,8 +540,8 @@ ApplicationWindow {
                     fileMenu.close()
                     Qt.callLater(function() {
                         if (controller) {
-                            controller.resetProfile(root.currentProfile)
-                            saveNotification.show("Profile reset to defaults")
+                            var success = controller.resetProfile(root.currentProfile)
+                            saveNotification.show(success ? "Profile reset to defaults" : "Failed to reset profile")
                         }
                     })
                 }
@@ -575,6 +596,23 @@ ApplicationWindow {
         Menu {
             id: settingsMenu
             title: qsTr("Settings")
+            MenuItem {
+                objectName: "accountMenuItem"
+                text: qsTr("Account...")
+                onTriggered: {
+                    settingsMenu.close()
+                    Qt.callLater(function() { accountDialog.open() })
+                }
+            }
+            MenuItem {
+                objectName: "privacyMenuItem"
+                text: qsTr("Privacy...")
+                onTriggered: {
+                    settingsMenu.close()
+                    Qt.callLater(function() { privacyDialog.open() })
+                }
+            }
+            MenuSeparator {}
             
             Menu {
                 id: outputDeviceMenu
@@ -703,6 +741,15 @@ ApplicationWindow {
             id: helpMenu
             title: qsTr("Help")
             MenuItem {
+                objectName: "checkUpdatesMenuItem"
+                text: qsTr("Check for Updates")
+                onTriggered: {
+                    helpMenu.close()
+                    Qt.callLater(function() { if (controller) controller.checkForUpdates() })
+                }
+            }
+            MenuSeparator {}
+            MenuItem {
                 text: qsTr("Getting Started...")
                 onTriggered: {
                     helpMenu.close()
@@ -765,7 +812,7 @@ ApplicationWindow {
             padding: 20
             
             Image {
-                source: "qrc:/logo.png"
+                source: Qt.resolvedUrl("../logo.png")
                 width: 80
                 height: 80
                 anchors.horizontalCenter: parent.horizontalCenter
@@ -906,13 +953,16 @@ ApplicationWindow {
                 spacing: 14
 
                 Label { text: "Widget Types"; color: "#4a9eff"; font.pixelSize: 15; font.bold: true; wrapMode: Text.WordWrap; width: parent.width }
-                Label { text: "• Joystick — 2-axis control (X/Y, RX/RY, Z/RZ, SL0/SL1). Supports triple-click lock for wheelchair joysticks with auto-return, sensitivity, and tremor filtering.\n• Button — Momentary (hold) or Toggle (click on/off). Up to 128 buttons, customizable color and shape.\n• H Slider / V Slider — Single-axis with snap modes: Hold position, Return to zero, or Spring to center.\n• D-Pad — 4 directional buttons mapped to vJoy button IDs.\n• Steering Wheel — Rotational single-axis control."; color: "#ccc"; font.pixelSize: 12; wrapMode: Text.WordWrap; width: parent.width }
+                Label { text: "• Joystick — 2-axis control (X/Y, RX/RY, Z/RZ, SL0/SL1). Supports triple-click lock for wheelchair joysticks with auto-return, sensitivity, tremor filtering, travel, anti-deadzone, and a precision gain.\n• Button — Momentary (hold) or Toggle (click on/off). Up to 128 buttons, customizable color and shape. Can act as a Precision aim modifier instead of a gamepad button.\n• H Slider / V Slider — Single-axis with snap modes: Hold position, Return to zero, or Spring to center.\n• D-Pad — 4 directional buttons mapped to vJoy button IDs.\n• Steering Wheel — Rotational single-axis control."; color: "#ccc"; font.pixelSize: 12; wrapMode: Text.WordWrap; width: parent.width }
+
+                Label { text: "Aiming Settings (per joystick)"; color: "#4a9eff"; font.pixelSize: 15; font.bold: true; wrapMode: Text.WordWrap; width: parent.width }
+                Label { text: "• Travel (px): how far the mouse moves from the press point for full deflection. Auto follows the drawn stick (81 px for a 200 px stick). More travel means more precision per pixel; try 160 to 300 for an aiming stick.\n• Anti-DZ: most games ignore stick input below their own inner deadzone (24% left stick, 26.5% right stick for a standard Xbox controller). The anti-deadzone lifts your smallest movement to that floor so it is never swallowed, and it is also what lets the game's own aim assist see your input. Set automatically for Xbox output; lower it if the game already compensates. Use the test pad with Drive the controller on to find the value where the smallest movement moves the game.\n• Buffer: a small margin above the anti-deadzone.\n• Precision: how much of the stick's range is left while a Precision aim button is held. 25% is a good start: swing the camera with the button up, hold it to settle on a target.\n• Tremor Filter (0-10): smooths jittery input on every stick path. 0 = off. Adds a little lag, so keep it as low as works."; color: "#ccc"; font.pixelSize: 12; wrapMode: Text.WordWrap; width: parent.width }
 
                 Label { text: "Joystick Lock Mode (FPS-Style Delta Tracking)"; color: "#4a9eff"; font.pixelSize: 15; font.bold: true; wrapMode: Text.WordWrap; width: parent.width }
                 Label { text: "When you triple-click a joystick:\n• Cursor becomes invisible and is anchored to joystick center\n• Mouse movements are treated as deflection deltas\n• Cursor is continuously warped back to center (like FPS mouse look)\n• Auto-return snaps joystick to center when you stop moving\n\nThis is designed for wheelchair joysticks where the physical stick controls cursor velocity. The virtual joystick deflection directly mirrors the physical stick position."; color: "#ccc"; font.pixelSize: 12; wrapMode: Text.WordWrap; width: parent.width }
 
                 Label { text: "Lock Settings"; color: "#4a9eff"; font.pixelSize: 15; font.bold: true }
-                Label { text: "• Lock Sensitivity (1-10) — How responsive the locked joystick is. Higher values require less physical movement for full deflection. Start at 4 and adjust.\n• Tremor Filter (0-10) — Smooths out jittery input. 0 = off, higher = more smoothing. Useful for wheelchair joysticks with tremor.\n• Auto-return Delay (1-10ms) — How quickly the joystick returns to center when you stop moving. Lower = faster snap back."; color: "#ccc"; font.pixelSize: 12; wrapMode: Text.WordWrap; width: parent.width }
+                Label { text: "• Lock Sensitivity (1-10) — How responsive the locked joystick is. Higher values require less physical movement for full deflection. Start at 4 and adjust.\n• Auto-return Delay (1-10ms) — How quickly the joystick returns to center when you stop moving. Lower = faster snap back.\n• The Tremor Filter, Anti-DZ, and Precision settings above apply in lock mode too."; color: "#ccc"; font.pixelSize: 12; wrapMode: Text.WordWrap; width: parent.width }
 
                 Label { text: "Sensitivity & Dead Zones"; color: "#4a9eff"; font.pixelSize: 15; font.bold: true }
                 Label { text: "Each axis widget has per-widget settings:\n• Sensitivity (0-100%) — Response curve. 50% = linear, lower = more precision near center, higher = more responsive.\n• Dead Zone (0-100%) — Ignores small inputs near the center position.\n• Extremity Dead Zone (0-100%) — Snaps to full deflection near the edges.\n• Copy From — Copy settings from another axis widget."; color: "#ccc"; font.pixelSize: 12; wrapMode: Text.WordWrap; width: parent.width }

@@ -66,13 +66,40 @@ def _saved_sticks(iface: Any) -> tuple:
     )
 
 
-def _send_burst(iface: Any, count: int = 10, delay: float = 0.016) -> None:
-    """Send ``count`` alternating strong deflections plus an A press, then re-centre."""
-    try:
+def _transient(iface: Any, x: float, y: float) -> None:
+    """Emit a left-stick position without claiming authorship of it.
+
+    Falls back to ``set_left_stick`` for interfaces that predate the transient
+    API, which is the old behaviour and the old race.
+    """
+    emit = getattr(iface, "emit_left_stick_transient", None)
+    if emit is not None:
+        emit(x, y)
+    else:
+        iface.set_left_stick(x, y)
+
+
+def _restore(iface: Any) -> None:
+    """Re-emit whatever the user currently commands, not a stale snapshot."""
+    restore = getattr(iface, "restore_left_stick", None)
+    if restore is not None:
+        restore()
+    else:
         lx, ly, _rx, _ry = _saved_sticks(iface)
+        iface.set_left_stick(lx, ly)
+
+
+def _send_burst(iface: Any, count: int = 10, delay: float = 0.016) -> None:
+    """Send ``count`` alternating strong deflections plus an A press, then re-centre.
+
+    The deflections are transient, so the burst never overwrites the commanded
+    stick position. A release that lands mid-burst is therefore what gets
+    re-emitted at the end, instead of being undone.
+    """
+    try:
         for i in range(count):
             val = BURST_AMPLITUDE * (1.0 if i % 2 == 0 else -1.0)
-            iface.set_left_stick(val, 0.0)
+            _transient(iface, val, 0.0)
             time.sleep(delay)
         try:
             iface.set_button(BUTTON_A, True)
@@ -80,7 +107,7 @@ def _send_burst(iface: Any, count: int = 10, delay: float = 0.016) -> None:
             iface.set_button(BUTTON_A, False)
         except Exception:
             pass
-        iface.set_left_stick(lx, ly)
+        _restore(iface)
         with _stats_lock:
             _stats["controller_bursts_sent"] += 1
         print(f"[controller_pulse] Sent {count}-pulse controller burst (amplitude={BURST_AMPLITUDE} + A press)")
@@ -88,9 +115,43 @@ def _send_burst(iface: Any, count: int = 10, delay: float = 0.016) -> None:
         print(f"[controller_pulse] Burst error: {exc}")
 
 
+def active_interface() -> Any:
+    """The interface the pulse is currently writing to, or None."""
+    with _lock:
+        return _interface if _active else None
+
+
+def rebind_interface(interface: Any) -> bool:
+    """Point a running pulse at a different interface.
+
+    Used when the output device changes: the old interface is about to be
+    destroyed, and a pulse still holding it would write to a closed device.
+
+    Parameters
+    ----------
+    interface : Any
+        A connected Xbox-style interface to continue against.
+
+    Returns
+    -------
+    bool
+        True if the running pulse was rebound. False if it is not running, or
+        the replacement is unusable, in which case the caller should stop.
+    """
+    global _interface
+    with _lock:
+        if not _active:
+            return False
+        if interface is None or not getattr(interface, "is_connected", False):
+            return False
+        _interface = interface
+        print("[controller_pulse] Pulse rebound to the new output interface")
+        return True
+
+
 def _pulse_loop() -> None:
     global _active
-    iface = _interface
+    iface = active_interface()
     if iface is None:
         print("[controller_pulse] No interface; pulse thread exiting")
         return
@@ -101,12 +162,23 @@ def _pulse_loop() -> None:
 
     while _active:
         try:
+            # Re-read every tick: the output device can change under us, and
+            # writing to the retired interface would hit a closed device.
+            current = active_interface()
+            if current is not None and current is not iface:
+                iface = current
             angle = (tick % 60) * (2.0 * math.pi / 60.0)
             micro_x = PULSE_AMPLITUDE * math.cos(angle)
             micro_y = PULSE_AMPLITUDE * math.sin(angle)
-            lx, ly, _rx, _ry = _saved_sticks(iface)
-            iface.set_left_stick(lx + micro_x, ly + micro_y)
-            iface.set_left_stick(lx, ly)
+            pulse = getattr(iface, "pulse_left_stick", None)
+            if pulse is not None:
+                # Read, offset and restore under the interface's lock, so a
+                # release cannot be undone by a pulse already in flight.
+                pulse(micro_x, micro_y)
+            else:
+                lx, ly, _rx, _ry = _saved_sticks(iface)
+                iface.set_left_stick(lx + micro_x, ly + micro_y)
+                iface.set_left_stick(lx, ly)
             with _stats_lock:
                 _stats["pulses_sent"] += 1
             tick += 1
@@ -116,8 +188,7 @@ def _pulse_loop() -> None:
         time.sleep(interval)
 
     try:
-        lx, ly, _rx, _ry = _saved_sticks(iface)
-        iface.set_left_stick(lx, ly)
+        _restore(active_interface() or iface)
     except Exception:
         pass
     print("[controller_pulse] Pulse loop stopped")

@@ -1,0 +1,146 @@
+# Virtual Machine Feasibility on a Windows Host
+
+**Status:** Research. No VM was created, no GPU was reassigned, and Hyper-V was not enabled on the dev machine.
+**Date:** 2026-09-11, repointed at a Windows host and remeasured 2026-09-12.
+**Host:** Windows. Nimbus runs on the host exactly as it ships today; the guest runs the game.
+**Question:** On a Windows host, does putting the game in a guest VM buy Nimbus anything it does not already have?
+**Answer in one line:** Almost certainly not, and the two facts that decide it are cheap to check before any VM is built.
+
+## 1. Assessment
+
+The isolation a guest would provide is the same property [Host Mode and Input Isolation](HOST_MODE_ISOLATION.md) section 8.4 already measured on this machine: the game sees no physical mouse while Nimbus does. The Nimbus Mouse Filter delivers that on one machine, at zero added latency, with no second operating system, no second Steam library, and no video encoder in the loop. A guest has to beat a working local answer, not an absent one.
+
+There is exactly one argument left for the guest, and it is worth stating fairly: **isolation without asking the user to install a kernel driver.** The filter needs attestation signing, Partner Center, per-vendor anti-cheat goodwill (section 7.6 of Host Mode), and its failure mode is a user with no mouse. A VM needs none of that. If that argument is the reason to keep this track alive, say so explicitly, because every other reason has been overtaken.
+
+Against it, the guest trades a policy risk for a hard block. The filter's anti-cheat risk is "we resemble a XIM and may be misclassified." The guest's is "EAC, BattlEye and Vanguard may refuse to start at all," which lands on precisely the titles that motivate isolation. That is a worse position, not a hedge.
+
+Two gates decide the whole question and both are cheap:
+
+1. **Does GPU paravirtualization work on this GPU?** The dev machine has one AMD adapter and no integrated graphics (section 3). Full passthrough would take the only display away from the host, which is incompatible with a Nimbus panel beside the game. That leaves Hyper-V GPU-PV, whose community tooling is documented mainly against NVIDIA and Intel. AMD is the least-reported path and is unverified here.
+2. **Do the target titles run in a guest at all?** The earlier draft removed the blanket claim that every anti-cheat refuses every VM, correctly, and then did not replace it with anything. The replacement is a per-title inventory, and the game harness can now produce one.
+
+If either gate fails, stop. Neither needs a VM built to answer.
+
+## 2. What a Windows host actually permits
+
+The option set collapses hard once the host is Windows. This is the main consequence of the change and it removes most of the earlier draft.
+
+| Route | Status on a Windows host |
+|---|---|
+| Discrete Device Assignment (DDA) | Windows Server only. Microsoft does not support it on client Windows. Out. |
+| KVM/QEMU with VFIO passthrough | Requires a Linux host. That is the [Linux Gaming Proposal](LINUX_GAMING_PROPOSAL.md) track, a different document and a different machine. Out here. |
+| Looking Glass | Needs a shared-memory device between guest and host (QEMU's `ivshmem`). Hyper-V has no equivalent, so the zero-copy display path does not exist on this host. Out, and sections about its release channels no longer apply. |
+| VMware Workstation / VirtualBox 3D | Translated 3D, not an accelerated game path. Out. |
+| WSL2 / WSLg | Gives a Linux guest GPU access through `/dev/dxg`, but the Vulkan support Proton needs is not a supported path there. Not a gaming route. |
+| **Hyper-V GPU-PV** | **The only credible option.** Shares one physical adapter with the guest. Officially Server 2025 only and stated unsupported on client Windows; community tooling (Easy-GPU-PV and similar) makes it work by copying host driver files into the guest. |
+
+So "a VM on the Windows host" means precisely one thing: a Hyper-V guest using GPU-PV, viewed through a video encoder. Everything else in the earlier draft described a Linux host and belongs in the Linux document.
+
+**Operational warning before anyone enables it.** Turning on Hyper-V makes Windows run as a root partition above the hypervisor, and it requires a reboot. THREADMASTER is the machine every driver measurement in `docs/vision/` was taken on, with a test-signed kernel mouse filter, vJoy and ViGEmBus installed and Secure Boot off. Do not enable Hyper-V there casually: it perturbs the baseline for the filter work, and a reboot ends the working session. If this track is pursued, do it on a machine that is not the driver baseline, or plan the reboot and the re-validation.
+
+## 3. The dev machine, measured 2026-09-12
+
+Replacing the hardware inventory in the earlier draft, which described the sandbox the document was written in rather than any machine this project uses.
+
+| Item | Observation | Consequence |
+|---|---|---|
+| Host | THREADMASTER, Windows 11 Pro 10.0.26200 | Pro, so Hyper-V is available as an optional feature |
+| CPU | AMD Ryzen 9 3950X, 16 cores / 32 threads, virtualization enabled in firmware | CPU is not a constraint. The earlier 2 vCPU budget was sized for a four-core laptop that does not exist here |
+| Memory | 31.9 GiB | Not a constraint. A 16 GiB guest leaves the host comfortable |
+| GPU | One AMD Radeon RX 6600 XT, 8 GiB, driver 31.0.14043.7000 | **The deciding fact.** No integrated graphics on a 3950X, so there is no second adapter to leave with the host |
+| Disk | 297 GiB free of 930 GiB on C: | A guest plus a small Steam library fits. A large library does not |
+| Hyper-V | Role not installed: no Hyper-V PowerShell module, no `vmms` or `vmcompute` service | Nothing has been changed on this machine. Enabling it is a deliberate, rebooting act |
+| Other | TeamViewer Virtual Monitor Adapter present | Relevant to display-path experiments, and a reminder that TeamViewer injects above the mouse class filter |
+
+The single-GPU finding is what makes this short. The earlier draft listed "single-GPU full passthrough" as "exclude initially" on general principle. On this machine it is excluded on fact, because the host would go dark and Nimbus is a panel on the host desktop.
+
+## 4. What the guest would buy, and what it costs
+
+**Buys:** an input boundary that needs no kernel driver, no code signing and no anti-cheat allow-listing. The physical mouse stays on the host; the guest has no path to it unless a viewer, a redirection service or a passed-through device supplies one. That last clause is the whole safety argument and it is a configuration property, not an architectural guarantee: every viewer's pointer forwarding, USB redirection and management console counts as a path and has to be disabled and verified.
+
+It is also, on paper, stronger isolation than the Linux alternative. Host Mode section 2 notes that an `EVIOCGRAB` silences a device without making it disappear, so some games still see a phantom. A guest that never receives the device has no phantom to see. That is the strongest form of the argument and the earlier draft did not make it.
+
+**Costs, on a Windows host specifically:**
+
+- A second Windows license and a second Steam installation, kept updated.
+- A video encode and decode round trip on the same machine, because Looking Glass does not apply under Hyper-V. That is latency and CPU spent to show the guest on the host's own monitor, and it is the cost Host Mode's Option A at least pays for a second machine's worth of GPU.
+- An unsupported graphics configuration: GPU-PV on client Windows, on the vendor with the least community coverage.
+- A new controller transport and its lifecycle (section 5), where none is needed today.
+- Anti-cheat exposure on the titles that motivate the work.
+
+**The comparison the earlier draft omitted.** Host Mode ranks two physical machines (Option A) as the most likely to actually work and the only option where the kernel-anti-cheat tier genuinely runs, needing no Nimbus code at all: the pad already travels the Moonlight to Sunshine to ViGEm chain correctly. A Hyper-V guest spends a second Windows license, an encoder and an unsupported GPU configuration to reach a worse anti-cheat outcome than a second machine does. Any case for the guest has to be made against Option A, not against doing nothing.
+
+## 5. Controller transport into the guest
+
+If the gates in section 1 pass, the guest needs the pad. Two routes, in order of cost.
+
+**Reuse the existing chain first.** Nimbus creates its pad on the host, Moonlight consumes it, Sunshine inside the guest recreates it. This is Host Mode Option A's transport with the second machine replaced by a guest, it is already known to work for gamepads, and it answers the transport question without new code. Sunshine controls controller, keyboard, mouse and pen input separately: enable controller and disable the rest, then verify what the guest actually received, including through every other console attached to the VM. Record the installed Sunshine release and which virtual HID driver it selected; recent releases ship a separately licensed driver with a ViGEmBus fallback, so the default is not what older guides describe.
+
+**Only if that proves insufficient, build a direct receiver.** A dedicated virtio-serial or Hyper-V socket channel carrying normalized controller frames, with a small guest receiver driving a virtual pad. Before specifying that protocol from scratch, note that Nimbus already has one of almost exactly this shape: `driver/nimbus_moufilter/nimbus_moufilter_ioctl.h` and `src/mouse_isolation_win.py` define a versioned interface, a session and generation model, parked reads, bounded queues, a liveness heartbeat and a watchdog that neutralizes when the client dies, matured through four interface revisions. Reuse that contract rather than reinventing it, per the repository's own "reconcile rather than duplicate" rule.
+
+Two semantics are worth carrying over regardless of route, because they are the ones that bite:
+
+- **Stop must be acknowledged.** A paused guest cannot run its own timeout, so a host Stop that is not acknowledged leaves held input in the guest until it executes again. On resume, invalidate the previous generation before replaying anything. If neutral-before-resume cannot be established, armed pause and resume is unsupported and the VM is disarmed before pausing.
+- **Host and guest clocks are not synchronized.** Measure round-trip time and guest-local processing separately, or establish synchronization first. Do not report a one-way number you did not earn.
+
+The guest backend question the earlier draft raised is already settled upstream of this document: Nimbus dropped `vgamepad` on 2026-09-09 for `src/padbus_client.py`, a pure-ctypes ViGEmBus client, and [PAD_BUS_FORK_PLAN.md](PAD_BUS_FORK_PLAN.md) is the answer to ViGEmBus being end-of-life.
+
+## 6. Display return path
+
+Under Hyper-V there is no shared-memory display, so the guest is shown through a video encoder: Parsec, Sunshine with Moonlight, or Enhanced Session Mode over RDP. RDP's GPU access is poor for games. That leaves a local encode and decode on the same GPU that is also rendering the game and compositing the host desktop and Nimbus's panel.
+
+Measure the stages separately, not as one blended number: input to host state, host to guest transport, guest polling, rendering, encode, decode, host presentation. Start at 1280x720 at 60 Hz, then 1920x1080 at 60 Hz, with the same scene, settings and input pattern, and record p50, p95 and p99 alongside frame times, dropped frames and host responsiveness. A percentage from an unrelated benchmark establishes nothing about this configuration.
+
+Also test whether controller input continues to reach the guest while Nimbus holds host focus. A viewer that stops forwarding when unfocused breaks the entire form factor, since the panel is meant to be used while the game runs.
+
+## 7. Experiment and gates
+
+Reordered from the earlier draft so the two cheap killers come first. Nothing below requires building a VM until gate C.
+
+### Gate A: per-title VM policy (hours, no VM)
+
+Establish, per title, whether it runs in a guest. FACEIT's published rules prohibit its anti-cheat in a VM or cloud service outright, so exclude that service. For the rest, check the actual policy rather than assuming one. The harness already scripts an EAC title (`eldenring`) and a BattlEye title (`arma3`), so this is a short run rather than a research project.
+
+**Pass:** at least one title that Nimbus users actually want, that is Raw Input, and that starts in a guest. **Fail:** stop. The track has no workload.
+
+### Gate B: GPU-PV on this adapter (hours, reversible, needs a reboot)
+
+On a machine that is not the driver baseline, enable Hyper-V and establish whether the RX 6600 XT partitions and whether a guest initializes an accelerated driver against it. This is the unverified assumption the whole track rests on.
+
+**Pass:** a guest renders 3D through the partitioned adapter. **Fail:** stop. There is no other route on a Windows host.
+
+### Gate C: isolation proof (a day, basic guest, no 3D)
+
+With a basic guest and the Sunshine or Moonlight transport, verify the actual claim. Disable pointer forwarding and USB redirection in every viewer and console. Run host pointer sweeps, operate Nimbus widgets, switch host focus, open a Nimbus dialog, exercise every mapped button, and stop with a stick held, while a guest-side raw-input monitor counts what arrived.
+
+**Pass:** host mouse activity produces zero guest mouse events; intended controller events arrive once and in order; Nimbus dialogs stay usable; Stop clears guest state within 500 ms of acknowledgement. **Fail:** the isolation claim is a configuration accident, not a property. Stop.
+
+### Gate D: playability against Option A (days)
+
+Compare the guest against two things, not one: the host running the game natively with the mouse filter, and a second physical machine over Moonlight. Include the full viewer and transport cost on the guest side. Record driver and software versions, the actual rendering GPU and a reproducible workload.
+
+**Pass:** the guest beats both on some axis a user would notice. **Fail, and this is the expected outcome:** keep the research, do not integrate.
+
+### Gate E: minimal integration (only if D passes)
+
+Add an optional `guest_controller` transport behind the existing output abstraction. Capability checks, session pairing, backend status, per-game selection and receiver recovery. A reconnect or snapshot restore creates a new generation and requires explicit rearming. VM provisioning, GPU binding and OS installation stay in Hyper-V's own tools; Nimbus does not become a VM manager.
+
+## 8. Remaining questions
+
+- Does any title that Nimbus users want both need isolation and start inside a Hyper-V guest?
+- Does GPU-PV partition an RX 6600 XT, and does a guest driver initialize against it?
+- What does enabling Hyper-V do to the mouse filter, vJoy and ViGEmBus on the same machine?
+- Does the encode and decode round trip on a single GPU leave acceptable frame times while that GPU also renders the game?
+- Does the viewer keep forwarding the pad while Nimbus holds host focus?
+- Is there any user for whom "no kernel driver" outweighs a second Windows license and an encoder?
+- If the answer to the last question is a real user, does a second physical machine serve them better?
+
+## 9. Sources
+
+- [Steam Big Picture](https://help.steampowered.com/en/faqs/view/3725-76D3-3F31-FB63)
+- [Partition and share GPUs with virtual machines on Hyper-V, Microsoft Learn](https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/gpu-partitioning)
+- [Plan for deploying devices with Discrete Device Assignment, Microsoft Learn](https://learn.microsoft.com/en-us/windows-server/virtualization/hyper-v/plan/plan-for-deploying-devices-using-discrete-device-assignment)
+- [FACEIT anti-cheat policy](https://support.faceit.com/hc/en-us/articles/360015788779-What-is-deemed-to-be-a-cheat)
+- [Sunshine configuration](https://docs.lizardbyte.dev/projects/sunshine/master/md_docs_2configuration.html)
+- [ViGEmBus end-of-life statement](https://docs.nefarius.at/projects/ViGEm/End-of-Life/)
+- [Looking Glass requirements](https://looking-glass.io/docs/B7/requirements/), retained only to record that its shared-memory transport has no Hyper-V equivalent

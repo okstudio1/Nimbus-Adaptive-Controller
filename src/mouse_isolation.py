@@ -37,13 +37,17 @@ keyboards. Everything is pure Python (``ioctl`` + ``struct``).
 from __future__ import annotations
 
 import atexit
-import fcntl
 import os
 import select
 import sys
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Union
+
+try:  # fcntl does not exist on Windows; same guard as uinput_interface
+    import fcntl
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None  # type: ignore[assignment]
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from .uinput_interface import (
     _ioc, _IOC_READ, _IOC_WRITE, _INPUT_EVENT, _UINPUT_SETUP,
@@ -51,7 +55,7 @@ from .uinput_interface import (
     UINPUT_DEVICE_PATH, EV_SYN, EV_KEY, SYN_REPORT, BUS_VIRTUAL,
 )
 
-MOUSE_ISOLATION_AVAILABLE = sys.platform.startswith("linux")
+MOUSE_ISOLATION_AVAILABLE = sys.platform.startswith("linux") and fcntl is not None
 
 EV_REL = 0x02
 EV_MSC = 0x04
@@ -83,8 +87,26 @@ def _is_mouse_button(code: int) -> bool:
     return BTN_MOUSE <= code <= BTN_TASK
 
 
+def _low_bits(value: str) -> int:
+    """Low 64 bits of a ``/proc`` capability bitmask.
+
+    The masks are space-separated 64-bit hex words, most significant first, so
+    the last word holds bits 0 to 63. REL_X/REL_Y and ABS_X/ABS_Y all live
+    there, which is all this module needs.
+    """
+    try:
+        return int(value.split()[-1], 16)
+    except (ValueError, IndexError):
+        return 0
+
+
 def list_input_devices() -> List[Dict[str, Any]]:
-    """Parse ``/proc/bus/input/devices`` into dicts with name, node, and handlers."""
+    """Parse ``/proc/bus/input/devices`` into dicts with name, node, and handlers.
+
+    Each entry also reports whether the device speaks relative motion
+    (``has_rel``) or absolute position (``has_abs``). The reader below only
+    translates ``EV_REL``, so that distinction decides what may be grabbed.
+    """
     devices: List[Dict[str, Any]] = []
     block: Dict[str, Any] = {}
 
@@ -92,12 +114,16 @@ def list_input_devices() -> List[Dict[str, Any]]:
         handlers = block.get("handlers", [])
         event = next((h for h in handlers if h.startswith("event")), None)
         if event:
+            rel, abs_ = block.get("rel", 0), block.get("abs", 0)
             devices.append({
                 "name": block.get("name", ""),
                 "node": f"/dev/input/{event}",
                 "handlers": handlers,
                 "is_pointer": any(h.startswith("mouse") for h in handlers),
                 "is_keyboard": "kbd" in handlers,
+                # REL_X|REL_Y and ABS_X|ABS_Y are bits 0 and 1 of their masks.
+                "has_rel": (rel & 0x3) == 0x3,
+                "has_abs": (abs_ & 0x3) == 0x3,
             })
 
     try:
@@ -112,6 +138,10 @@ def list_input_devices() -> List[Dict[str, Any]]:
                     block["name"] = line.split('"')[1] if '"' in line else line[8:]
                 elif line.startswith("H: Handlers="):
                     block["handlers"] = line[len("H: Handlers="):].split()
+                elif line.startswith("B: REL="):
+                    block["rel"] = _low_bits(line[len("B: REL="):])
+                elif line.startswith("B: ABS="):
+                    block["abs"] = _low_bits(line[len("B: ABS="):])
         if block:
             flush()
     except OSError:
@@ -119,15 +149,54 @@ def list_input_devices() -> List[Dict[str, Any]]:
     return devices
 
 
+def pointer_support(dev: Dict[str, Any]) -> Tuple[bool, str]:
+    """Whether this pointer can be grabbed, and why not when it cannot.
+
+    An exclusive grab silences a device for everyone, so grabbing one whose
+    events this module cannot translate is worse than declining it: the
+    desktop pointer stops moving and the user has no way to reach the control
+    that would release it. A touchpad reporting absolute position through
+    ``EV_ABS`` is exactly that case, and it carries a ``mouseN`` handler like
+    any other pointer, so the handler alone cannot be the test.
+
+    Parameters
+    ----------
+    dev : dict
+        An entry from :func:`list_input_devices`.
+
+    Returns
+    -------
+    tuple of (bool, str)
+        Whether the device is grabbable, and an explanation when it is not.
+    """
+    if dev.get("has_rel", True):
+        return True, ""
+    if dev.get("has_abs"):
+        return False, ("reports absolute position, which this reader does not "
+                       "translate; grabbing it would freeze the pointer")
+    return False, "reports no relative motion axes"
+
+
 def list_pointer_devices() -> List[Dict[str, Any]]:
-    """Pointer-class devices Nimbus would grab, excluding its own virtual ones."""
+    """Pointer-class devices Nimbus would grab, excluding its own virtual ones.
+
+    Entries carry ``supported`` and ``unsupported_reason`` so a caller can show
+    a device it will not grab, rather than hiding it and leaving the user to
+    wonder why isolation ignored their touchpad.
+    """
     out = []
     for dev in list_input_devices():
         if not dev["is_pointer"] or dev["name"].startswith("Nimbus"):
             continue
         dev["readable"] = os.access(dev["node"], os.R_OK)
+        dev["supported"], dev["unsupported_reason"] = pointer_support(dev)
         out.append(dev)
     return out
+
+
+def supported_pointer_devices() -> List[Dict[str, Any]]:
+    """Only the pointer devices this module can actually grab and translate."""
+    return [d for d in list_pointer_devices() if d.get("supported", True)]
 
 
 class _PassthroughKeyboard:
@@ -251,6 +320,13 @@ class MouseIsolation:
                 raise RuntimeError("no pointer devices found")
             problems = []
             for dev in candidates:
+                ok, why = pointer_support(dev)
+                if not ok:
+                    # Declining is the safe outcome. Grabbing this device would
+                    # take the pointer away from the desktop and give Nimbus
+                    # nothing it can translate, stranding the user.
+                    problems.append(f"{dev['name'] or dev['node']}: {why}")
+                    continue
                 try:
                     self._grab_one(dev)
                 except Exception as exc:
@@ -281,17 +357,29 @@ class MouseIsolation:
 
     def _grab_one(self, dev: Dict[str, Any]) -> None:
         fd = os.open(dev["node"], os.O_RDONLY | os.O_NONBLOCK)
+        # Bound before the try: _key_capabilities can raise, and the cleanup
+        # path below has to be able to ask whether a keyboard was built yet.
+        passthrough = None
         try:
             keys = _key_capabilities(fd)
             # Keyboard keys: everything below the mouse-button block, plus the
             # extra keys above it but below the joystick/trigger-happy range.
             kb_keys = [k for k in keys if k < BTN_MOUSE or (BTN_TASK < k < 0x2C0)]
-            passthrough = None
             if dev.get("is_keyboard") or any(k < BTN_MOUSE for k in kb_keys):
                 # Refuse to silence a keyboard: only grab if we can re-emit its keys.
                 passthrough = _PassthroughKeyboard(dev["name"] or "Keyboard", kb_keys)
             fcntl.ioctl(fd, EVIOCGRAB, 1)
         except Exception:
+            # The pass-through keyboard is built before the grab is attempted,
+            # and it is only registered in self._passthrough once the grab
+            # succeeds. A failure here would otherwise strand its /dev/uinput
+            # descriptor and leave a virtual keyboard on the system for the
+            # life of the process, once per attempt against a busy device.
+            if passthrough is not None:
+                try:
+                    passthrough.close()
+                except Exception:
+                    pass
             os.close(fd)
             raise
         self._grabbed[fd] = dict(dev)

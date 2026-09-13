@@ -32,15 +32,20 @@
 - [Hardware Integration](vision/HARDWARE_INTEGRATION.md) — wrapping XAC, QuadStick, and other adaptive hardware through vJoy; input pipeline architecture
 - [Keyboard Output](vision/KEYBOARD_OUTPUT.md) — native keystroke/shortcut emission via SendInput; no external dependencies; bundled in installer
 - [Host Mode & Input Isolation](vision/HOST_MODE_ISOLATION.md) — solving the Raw Input tier; VMs, cloud gaming, two-PC streaming, Linux/evdev, and a mouse-class filter driver
-- [Linux Probe Plan](vision/LINUX_PROBE_PLAN.md) — EVIOCGRAB + uinput experiment against a real EAC game; Probe 1 complete: all four criteria pass against Elden Ring under EAC; Wayland (Probe 2) still open
+- [Aim Assistance](vision/AIM_ASSISTANCE.md): why aiming is hard, a code audit of the stick pipeline, the assistance options ranked by effort, and the tier 1 build (one radial shaping pass, anti-deadzone, travel, precision modifier) with its five-layer test plan and the measurements against Left 4 Dead 2
+- [Game Test Harness](vision/GAME_TEST_HARNESS.md): automated tests against real games with ground truth from the game's console (Source engine) or frame differencing; recipes, oracles, a pad and a Nimbus actuator, the environment Spectator+ will run in, and the Left 4 Dead 2 calibration
+- [Testing Strategy](vision/TESTING_STRATEGY.md): from liveness checks to regression tests; the fast-test runner and CI, the frame oracle as a motion measurement, windowed games, a console-less reset and expected-value bands, with what the saved frames changed about the design and what the rerun of every game found
+- [Linux Probe Plan](vision/LINUX_PROBE_PLAN.md): the EVIOCGRAB and uinput experiment against a real EAC game. Probe 1 is complete, all four criteria pass against Elden Ring under EAC; Wayland (Probe 2) is still open
+- [Windows Mouse Filter Plan](vision/WINDOWS_MOUSE_FILTER_PLAN.md): the Windows counterpart, a mouclass upper filter that hands the physical mouse to Nimbus, motivated by the Raw Input measurements in section 8 of Host Mode
+- [Pad Bus Fork Plan](vision/PAD_BUS_FORK_PLAN.md): forking and modernizing the archived ViGEmBus into a Nimbus-owned virtual gamepad bus driver; what the driver really does, a pure-Python client that drops the `vgamepad` dependency first, the rename and coexistence inventory, and the anti-cheat gate that decides whether we ever sign it
+- [Nimbus Mouse Filter driver README](../driver/README.md): building, test-signing, and dev-installing the kernel filter (prototype, not in any release)
+- [Driver release signing](../driver/SIGNING.md): Partner Center registration, attestation signing, and where attestation stands after the April 2026 Windows Driver Policy
+- [Linux Gaming Technical Proposal](vision/LINUX_GAMING_PROPOSAL.md): a Linux/X11 port of Nimbus, input ownership, session recovery, game presets, and phased acceptance criteria; a separate platform track, not the host this project targets
+- [Virtual Machine Feasibility](vision/VIRTUAL_MACHINE_FEASIBILITY.md): running the game in a guest on the Windows host, why the single-GPU dev machine and Hyper-V leave only GPU-PV, the controller transport that would be needed, and why the measured mouse filter beats all of it
 
 ## Distribution & Sustainability
-- [Business Model](distribution/BUSINESS_MODEL.md) — freemium tiers, market research, pricing, revenue scenarios
-- [Open Core Playbook](distribution/OPEN_CORE_PLAYBOOK.md) — dual-repo strategy, license gating, CLA, real-world precedents
-- [Release Strategy](distribution/RELEASE_STRATEGY.md) — open source philosophy, funding models, sponsorship tiers, grant sources
-- [Sponsorship Outreach](distribution/SPONSORSHIP_OUTREACH.md) — email templates, pitch deck outline, partnership guidance
-- [Voice Command Integration](distribution/VOICE_COMMAND.md) — speech recognition options, latency analysis, architecture
-- [Spectator+ AI Agent](distribution/SPECTATOR_PLUS.md) — AI-assisted play concept, hardware requirements, RL architecture
+The business model, open-core playbook, release strategy, sponsorship outreach, voice command and Spectator+ concept documents are kept in a private repository and are not part of this one. What exists of Spectator+ in code is described here:
+- [Game Test Harness, section 4.7](vision/GAME_TEST_HARNESS.md): Spectator+ v0, scripted primitives (turn, walk, press) calibrated per game and measured in a real game, and what is not built yet
 
 ## Media
 - [Screenshots](screenshots/) — application UI screenshots

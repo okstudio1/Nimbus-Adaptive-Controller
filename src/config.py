@@ -4,15 +4,157 @@ Handles sensitivity curves, dead zones, and other controller parameters.
 """
 
 import json
+import math
 import os
-import shutil
 import sys
 from pathlib import Path
 from typing import Dict, Any, Tuple, List, Optional
-import numpy as np
+from .profile_repository import ProfileRepository
 
 # App name for user data directory
 APP_NAME = "ProjectNimbus"
+
+# The inner deadzones XInput documents for its two sticks, as fractions of
+# the 16-bit axis range. Games that follow the documentation discard stick
+# input below these magnitudes, so they are the output anti-deadzone
+# defaults when Nimbus presents an XInput (ViGEm) controller. Games override
+# them freely, which is why the value is a per-widget setting and not a
+# constant of the pipeline.
+XINPUT_LEFT_THUMB_DEADZONE = 7849 / 32767.0     # 0.2395
+XINPUT_RIGHT_THUMB_DEADZONE = 8689 / 32767.0    # 0.2652
+
+# Per-widget shaping defaults, shared by the bridge (which resolves a widget's
+# parameters) and the QML config dialog (which shows them). Percent units
+# match the sliders in the dialog; anti-deadzone values are fractions of the
+# output range.
+DEFAULT_SENSITIVITY_PCT = 50.0
+DEFAULT_DEAD_ZONE_PCT = 0.0
+DEFAULT_EXTREMITY_PCT_STICK = 5.0
+DEFAULT_EXTREMITY_PCT_AXIS = 0.0
+DEFAULT_ANTI_DEADZONE_BUFFER = 0.02
+DEFAULT_TREMOR_FILTER = 0.0
+DEFAULT_PRECISION_GAIN = 0.25
+
+
+def sensitivity_power(sensitivity_pct: float) -> float:
+    """
+    Map the sensitivity slider to the exponent of the response curve.
+
+    50 is linear. Below 50 the curve flattens near the centre (exponent up
+    to 4.0 at 0); above 50 it steepens (exponent down to 0.1 at 100). This
+    is the one place the mapping lives; the curve preview asks the bridge
+    for its points rather than re-implementing it.
+
+    Parameters
+    ----------
+    sensitivity_pct : float
+        Slider value, 0 to 100.
+
+    Returns
+    -------
+    float
+        Exponent applied to the normalised magnitude.
+    """
+    sensitivity = max(0.0, min(100.0, float(sensitivity_pct))) / 100.0
+    if abs(sensitivity - 0.5) < 1e-9:
+        return 1.0
+    if sensitivity < 0.5:
+        return 1.0 + (0.5 - sensitivity) * 6.0
+    return max(0.1, 1.0 - (sensitivity - 0.5) * 1.8)
+
+
+def shape_magnitude(magnitude: float,
+                    sensitivity: float = DEFAULT_SENSITIVITY_PCT,
+                    dead_zone: float = DEFAULT_DEAD_ZONE_PCT,
+                    extremity_dead_zone: float = DEFAULT_EXTREMITY_PCT_STICK,
+                    anti_deadzone: float = 0.0,
+                    anti_deadzone_buffer: float = 0.0,
+                    gain: float = 1.0) -> float:
+    """
+    Shape a non-negative input magnitude into an output magnitude.
+
+    This is the single response formula for every axis Nimbus drives. In
+    order: inner deadzone, gain, response curve, then a remap of anything
+    non-zero onto ``[anti_deadzone + anti_deadzone_buffer, 1 - extremity]``.
+    The floor is applied inside the ceiling so that the smallest real
+    movement always lands at exactly the floor the user calibrated, whatever
+    the extremity cap is set to.
+
+    Parameters
+    ----------
+    magnitude : float
+        Input magnitude, 0 to 1 (clamped).
+    sensitivity : float
+        Response curve, percent; 50 is linear (see :func:`sensitivity_power`).
+    dead_zone : float
+        Inner deadzone, percent of the slider; 100 percent is a quarter of
+        the input range, matching the historical dialog units.
+    extremity_dead_zone : float
+        Percent taken off the top of the output range (a maximum-output cap).
+    anti_deadzone : float
+        Output floor, 0 to 1: the game's own inner deadzone to skip past.
+    anti_deadzone_buffer : float
+        Added to the floor so the user can re-introduce a small margin above
+        the game's threshold. Only counts when ``anti_deadzone`` is non-zero:
+        a margin above nothing is nothing.
+    gain : float
+        Multiplier on the post-deadzone magnitude; the precision modifier
+        passes a value below 1 here.
+
+    Returns
+    -------
+    float
+        Output magnitude in [0, 1]. Exactly 0 inside the deadzone.
+    """
+    m = max(0.0, min(1.0, float(magnitude)))
+    dz = max(0.0, min(100.0, float(dead_zone))) / 100.0 * 0.25
+    if m <= dz:
+        return 0.0
+    normalized = (m - dz) / max(1e-6, 1.0 - dz)
+    normalized = max(0.0, min(1.0, normalized * max(0.0, float(gain))))
+    if normalized <= 0.0:
+        return 0.0
+    curved = math.pow(normalized, sensitivity_power(sensitivity))
+    ceiling = 1.0 - max(0.0, min(100.0, float(extremity_dead_zone))) / 100.0
+    floor = max(0.0, min(1.0, float(anti_deadzone)))
+    if floor > 0.0:
+        floor += max(0.0, min(1.0, float(anti_deadzone_buffer)))
+    floor = min(floor, ceiling)
+    return floor + curved * (ceiling - floor)
+
+
+def shape_vector(x: float, y: float, **params: float) -> Tuple[float, float]:
+    """
+    Shape a raw stick vector radially.
+
+    The vector is clamped to the unit circle, its magnitude is passed
+    through :func:`shape_magnitude`, and the direction is preserved. Radial
+    rather than per-axis so the dead region is a circle, diagonals respond
+    like cardinals, and the output magnitude never exceeds 1.
+
+    Parameters
+    ----------
+    x, y : float
+        Raw normalised deflection, before any shaping.
+    **params
+        Keyword arguments for :func:`shape_magnitude`.
+
+    Returns
+    -------
+    Tuple[float, float]
+        Shaped output per axis, each in [-1, 1], magnitude at most 1.
+    """
+    fx, fy = float(x), float(y)
+    mag = math.hypot(fx, fy)
+    if mag <= 0.0:
+        return 0.0, 0.0
+    if mag > 1.0:
+        fx, fy, mag = fx / mag, fy / mag, 1.0
+    out = shape_magnitude(mag, **params)
+    if out <= 0.0:
+        return 0.0, 0.0
+    scale = out / mag
+    return fx * scale, fy * scale
 
 
 class ControllerConfig:
@@ -38,6 +180,7 @@ class ControllerConfig:
         self._bundled_profiles_dir = self._get_bundled_profiles_dir()
         self._user_data_dir = self._get_user_data_dir()
         self._user_profiles_dir = self._user_data_dir / "profiles"
+        self.profiles = ProfileRepository(self._user_profiles_dir, self._bundled_profiles_dir)
         
         # Ensure user profiles directory exists and has default profiles
         self._ensure_user_profiles()
@@ -86,10 +229,14 @@ class ControllerConfig:
         return base_path / "profiles"
     
     # Old bundled profile IDs that have been retired and should be cleaned up
-    # from the user profiles directory to avoid confusion.
+    # from the user profiles directory to avoid confusion. Every id here must
+    # be absent from profiles/: an id that is both listed here and still
+    # shipped gets deleted and re-copied on every launch, which silently
+    # reverts whatever the user changed in it. xbox_controller was in this set
+    # while profiles/xbox_controller.json was still being shipped and edited,
+    # so it reset itself at every start.
     _DEPRECATED_BUNDLED_PROFILES = {
         "flight_simulator",
-        "xbox_controller",
         "adaptive_platform_1",
     }
 
@@ -100,25 +247,7 @@ class ControllerConfig:
         Copies bundled profiles to user directory if they don't exist.
         Also removes deprecated bundled profiles that are no longer shipped.
         """
-        # Create user profiles directory
-        self._user_profiles_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Remove deprecated bundled profiles that are no longer shipped
-        for old_id in self._DEPRECATED_BUNDLED_PROFILES:
-            old_path = self._user_profiles_dir / f"{old_id}.json"
-            if old_path.exists():
-                try:
-                    old_path.unlink()
-                    print(f"Removed deprecated profile: {old_id}")
-                except OSError:
-                    pass
-        
-        # Copy bundled profiles if they don't exist in user directory
-        if self._bundled_profiles_dir.exists():
-            for profile_file in self._bundled_profiles_dir.glob("*.json"):
-                user_profile_path = self._user_profiles_dir / profile_file.name
-                if not user_profile_path.exists():
-                    shutil.copy2(profile_file, user_profile_path)
+        self.profiles.ensure_defaults(self._DEPRECATED_BUNDLED_PROFILES)
     
     def _load_default_config(self) -> Dict[str, Any]:
         """
@@ -260,148 +389,104 @@ class ControllerConfig:
         
         config_ref[keys[-1]] = value
     
-    def apply_sensitivity_curve(self, value: float, joystick: str, axis: str) -> float:
+    def _settings_params(self, section: str) -> Dict[str, float]:
         """
-        Apply sensitivity curve to input value.
-        
-        Args:
-            value: Raw input value (-1.0 to 1.0)
-            joystick: Joystick identifier ("left" or "right")
-            axis: Axis identifier ("x" or "y")
-            
-        Returns:
-            Processed value with sensitivity curve applied
+        Shaping parameters from a profile-level settings block.
+
+        Used by the legacy (non-custom) layouts, whose sticks carry no
+        per-widget settings: ``joystick_settings`` for the sticks and
+        ``rudder_settings`` for the rudder axis. Every value comes from the
+        block itself, including ``anti_deadzone``, which is off unless the
+        profile sets it.
+
+        Parameters
+        ----------
+        section : str
+            ``"joystick_settings"`` or ``"rudder_settings"``.
+
+        Returns
+        -------
+        Dict[str, float]
+            Keyword arguments for :func:`shape_magnitude`.
         """
-        # If the new dialog-based settings exist, prefer them for QML path so
-        # runtime behavior matches the Joystick Settings preview exactly.
-        try:
-            if self.get("joystick_settings.sensitivity", None) is not None:
-                return self.apply_joystick_dialog_curve(value)
-        except Exception:
-            pass
-        if abs(value) < self.get(f"joysticks.{joystick}.dead_zone", 0.1):
-            return 0.0
-        
-        # Remove dead zone
-        sign = 1 if value >= 0 else -1
-        abs_value = abs(value)
-        dead_zone = self.get(f"joysticks.{joystick}.dead_zone", 0.1)
-        
-        # Scale to remove dead zone
-        if abs_value > dead_zone:
-            scaled_value = (abs_value - dead_zone) / (1.0 - dead_zone)
-        else:
-            return 0.0
-        
-        # Apply sensitivity curve
-        curve_type = self.get(f"joysticks.{joystick}.curve_type", "linear")
-        curve_power = self.get(f"joysticks.{joystick}.curve_power", 2.0)
-        
-        if curve_type == "exponential":
-            processed_value = np.power(scaled_value, curve_power)
-        elif curve_type == "logarithmic":
-            processed_value = np.log(1 + scaled_value * (np.e - 1)) / np.log(np.e)
-        else:  # linear
-            processed_value = scaled_value
-        
-        # Apply sensitivity multiplier
-        sensitivity = self.get(f"joysticks.{joystick}.sensitivity", 1.0)
-        processed_value *= sensitivity
-        
-        # Apply inversion if needed
-        invert_key = f"joysticks.{joystick}.invert_{axis}"
-        if self.get(invert_key, False):
-            sign *= -1
-        
-        # Clamp to max range
-        max_range = self.get(f"joysticks.{joystick}.max_range", 1.0)
-        processed_value = min(processed_value, max_range)
-        
-        return sign * processed_value
+        # No anti-deadzone by default here, even under ViGEm. The output floor
+        # is a per-widget feature: the custom-layout dialog is the only place
+        # it can be seen, calibrated against a running game, or turned off.
+        # Defaulting it on for the legacy layouts would give an adaptive, xbox
+        # or flight_sim profile a silent ~0.26 floor with no control anywhere
+        # in the UI to lower it, which is wrong for a flight sim whatever it
+        # does for aiming. A profile that wants one can still set
+        # joystick_settings.anti_deadzone explicitly; XINPUT_LEFT_THUMB_DEADZONE
+        # and XINPUT_RIGHT_THUMB_DEADZONE are the values the widget path uses.
+        default_adz = 0.0
+        return {
+            "sensitivity": float(self.get(f"{section}.sensitivity", DEFAULT_SENSITIVITY_PCT)),
+            "dead_zone": float(self.get(f"{section}.deadzone", 10.0)),
+            "extremity_dead_zone": float(self.get(f"{section}.extremity_deadzone", DEFAULT_EXTREMITY_PCT_STICK)),
+            "anti_deadzone": float(self.get(f"{section}.anti_deadzone", default_adz)),
+            "anti_deadzone_buffer": float(self.get(f"{section}.anti_deadzone_buffer", DEFAULT_ANTI_DEADZONE_BUFFER)),
+        }
+
+    def shape_stick(self, x: float, y: float, joystick: str,
+                    output_mode: str = "vjoy", gain: float = 1.0) -> Tuple[float, float]:
+        """
+        Shape a raw stick vector with the profile's global joystick settings.
+
+        This is the path for the legacy layouts (``adaptive``, ``xbox``,
+        ``flight_sim``), whose sticks have no per-widget settings. Custom
+        layout widgets are shaped by the bridge from their own settings with
+        the same :func:`shape_vector`.
+
+        Parameters
+        ----------
+        x, y : float
+            Raw normalised deflection from the widget, before any shaping.
+        joystick : str
+            Accepted for call-site symmetry with the widget path; the profile
+            block is shared by both sticks, so it does not select anything.
+        output_mode : str
+            Accepted for the same reason. Unlike the per-widget path, this
+            block gets no XInput anti-deadzone default (see
+            :meth:`_settings_params`).
+        gain : float
+            Multiplier on the post-deadzone magnitude (precision modifier).
+
+        Returns
+        -------
+        Tuple[float, float]
+            Shaped output in [-1, 1] per axis, magnitude never exceeding 1.
+        """
+        del joystick, output_mode   # documented above: neither selects anything here
+        params = self._settings_params("joystick_settings")
+        return shape_vector(x, y, gain=gain, **params)
 
     def apply_joystick_dialog_curve(self, value: float) -> float:
         """
-        Apply curve using percent-based settings from the Joystick Settings dialog.
+        Shape a single bipolar value with the profile's ``joystick_settings``.
 
-        Matches the math in qt_dialogs._CurvePreview._calc_output so the live
-        preview and runtime feel identical.
+        Kept for the Qt Widgets settings dialogs; the same formula as
+        :func:`shape_magnitude` without any anti-deadzone.
         """
-        try:
-            sensitivity_pct = float(self.get("joystick_settings.sensitivity", 50.0))
-            deadzone_pct = float(self.get("joystick_settings.deadzone", 10.0))
-            extremity_pct = float(self.get("joystick_settings.extremity_deadzone", 5.0))
-
-            # Convert percentages to the preview's internal units
-            deadzone = (deadzone_pct / 100.0) * 0.25
-            extremity_deadzone = extremity_pct / 100.0
-            sensitivity = sensitivity_pct / 100.0
-
-            v = float(value)
-            if abs(v) < deadzone:
-                return 0.0
-
-            sign = 1.0 if v >= 0 else -1.0
-            abs_input = abs(v)
-            available_range = 1.0 - deadzone
-            normalized_input = (abs_input - deadzone) / max(1e-6, available_range)
-
-            if abs(sensitivity - 0.5) < 1e-9:
-                output = normalized_input
-            elif sensitivity < 0.5:
-                power = 1.0 + (0.5 - sensitivity) * 6.0
-                output = float(np.power(normalized_input, power))
-            else:
-                power = 1.0 - (sensitivity - 0.5) * 1.8
-                output = float(np.power(normalized_input, max(0.1, power)))
-
-            if extremity_deadzone > 0:
-                max_output = 1.0 - extremity_deadzone
-                output *= max_output
-
-            return output * sign
-        except Exception:
-            # Fallback to identity on any error
-            return float(value)
+        v = float(value)
+        params = self._settings_params("joystick_settings")
+        params["anti_deadzone"] = 0.0
+        params["anti_deadzone_buffer"] = 0.0
+        out = shape_magnitude(abs(v), **params)
+        return out if v >= 0 else -out
 
     def apply_rudder_sensitivity_curve(self, value: float) -> float:
         """
-        Apply curve using percent-based settings from the Rudder Settings dialog.
-        Mirrors apply_joystick_dialog_curve but reads rudder_settings.* keys.
+        Shape a single bipolar value with the profile's ``rudder_settings``.
+
+        Mirrors :meth:`apply_joystick_dialog_curve` for the rudder axis of
+        the legacy layouts.
         """
-        try:
-            sensitivity_pct = float(self.get("rudder_settings.sensitivity", 50.0))
-            deadzone_pct = float(self.get("rudder_settings.deadzone", 10.0))
-            extremity_pct = float(self.get("rudder_settings.extremity_deadzone", 5.0))
-
-            deadzone = (deadzone_pct / 100.0) * 0.25
-            extremity_deadzone = extremity_pct / 100.0
-            sensitivity = sensitivity_pct / 100.0
-
-            v = float(value)
-            if abs(v) < deadzone:
-                return 0.0
-
-            sign = 1.0 if v >= 0 else -1.0
-            abs_input = abs(v)
-            available_range = 1.0 - deadzone
-            normalized_input = (abs_input - deadzone) / max(1e-6, available_range)
-
-            if abs(sensitivity - 0.5) < 1e-9:
-                output = normalized_input
-            elif sensitivity < 0.5:
-                power = 1.0 + (0.5 - sensitivity) * 6.0
-                output = float(np.power(normalized_input, power))
-            else:
-                power = 1.0 - (sensitivity - 0.5) * 1.8
-                output = float(np.power(normalized_input, max(0.1, power)))
-
-            if extremity_deadzone > 0:
-                max_output = 1.0 - extremity_deadzone
-                output *= max_output
-
-            return output * sign
-        except Exception:
-            return float(value)
+        v = float(value)
+        params = self._settings_params("rudder_settings")
+        params["anti_deadzone"] = 0.0
+        params["anti_deadzone_buffer"] = 0.0
+        out = shape_magnitude(abs(v), **params)
+        return out if v >= 0 else -out
     
     def get_vjoy_value(self, normalized_value: float) -> int:
         """
@@ -523,30 +608,7 @@ class ControllerConfig:
         Returns:
             List of dicts with 'id', 'name', 'description', 'layout_type', 'is_builtin' keys
         """
-        profiles = []
-        if not self._user_profiles_dir.exists():
-            return profiles
-        
-        # Get list of built-in profile IDs
-        builtin_ids = set()
-        if self._bundled_profiles_dir.exists():
-            builtin_ids = {f.stem for f in self._bundled_profiles_dir.glob("*.json")}
-        
-        for profile_file in self._user_profiles_dir.glob("*.json"):
-            try:
-                with open(profile_file, 'r') as f:
-                    data = json.load(f)
-                    profiles.append({
-                        "id": profile_file.stem,
-                        "name": data.get("name", profile_file.stem),
-                        "description": data.get("description", ""),
-                        "layout_type": data.get("layout_type", "flight_sim"),
-                        "is_builtin": profile_file.stem in builtin_ids
-                    })
-            except (json.JSONDecodeError, IOError):
-                continue
-        
-        return profiles
+        return self.profiles.list_profiles()
 
     def get_current_profile(self) -> str:
         """Get the current profile ID."""
@@ -566,15 +628,7 @@ class ControllerConfig:
         Returns:
             Profile data dict or None if not found
         """
-        profile_path = self._user_profiles_dir / f"{profile_id}.json"
-        if not profile_path.exists():
-            return None
-        
-        try:
-            with open(profile_path, 'r') as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            return None
+        return self.profiles.load(profile_id)
 
     def switch_profile(self, profile_id: str) -> bool:
         """
@@ -666,7 +720,6 @@ class ControllerConfig:
             True if save was successful, False otherwise
         """
         profile_id = self.get_current_profile()
-        profile_path = self._user_profiles_dir / f"{profile_id}.json"
         
         # Load existing profile data to preserve structure
         profile_data = self.load_profile(profile_id)
@@ -700,13 +753,7 @@ class ControllerConfig:
                 if value is not None:
                     profile_data["axis_mapping"][axis_key] = value
         
-        # Save to file
-        try:
-            with open(profile_path, 'w') as f:
-                json.dump(profile_data, f, indent=4)
-            return True
-        except IOError:
-            return False
+        return self.profiles.save(profile_id, profile_data)
 
     def save_custom_layout(self, widgets: list, grid_snap: int = 10, show_grid: bool = True) -> bool:
         """
@@ -721,7 +768,6 @@ class ControllerConfig:
             True if save was successful, False otherwise
         """
         profile_id = self.get_current_profile()
-        profile_path = self._user_profiles_dir / f"{profile_id}.json"
         
         profile_data = self.load_profile(profile_id)
         if profile_data is None:
@@ -735,12 +781,7 @@ class ControllerConfig:
         profile_data["custom_layout"]["grid_snap"] = grid_snap
         profile_data["custom_layout"]["show_grid"] = show_grid
         
-        try:
-            with open(profile_path, 'w') as f:
-                json.dump(profile_data, f, indent=4)
-            return True
-        except IOError:
-            return False
+        return self.profiles.save(profile_id, profile_data)
 
     def save_profile_as(self, profile_id: str, profile_data: dict) -> bool:
         """
@@ -753,13 +794,7 @@ class ControllerConfig:
         Returns:
             True if save was successful, False otherwise
         """
-        profile_path = self._user_profiles_dir / f"{profile_id}.json"
-        try:
-            with open(profile_path, 'w') as f:
-                json.dump(profile_data, f, indent=4)
-            return True
-        except IOError:
-            return False
+        return self.profiles.save(profile_id, profile_data)
 
     def reset_profile(self, profile_id: str) -> bool:
         """
@@ -773,25 +808,14 @@ class ControllerConfig:
         Returns:
             True if reset was successful, False otherwise
         """
-        bundled_path = self._bundled_profiles_dir / f"{profile_id}.json"
-        user_path = self._user_profiles_dir / f"{profile_id}.json"
-        
-        if not bundled_path.exists():
-            return False  # Can't reset non-built-in profiles
-        
-        try:
-            shutil.copy2(bundled_path, user_path)
-            
-            # If this is the current profile, reload settings
-            if profile_id == self._current_profile:
-                profile_data = self.load_profile(profile_id)
-                if profile_data:
-                    self._apply_profile_settings(profile_data)
-                    self.save_config()
-            
-            return True
-        except IOError:
+        if not self.profiles.reset(profile_id):
             return False
+        if profile_id == self._current_profile:
+            profile_data = self.load_profile(profile_id)
+            if profile_data:
+                self._apply_profile_settings(profile_data)
+                self.save_config()
+        return True
 
     def duplicate_profile(self, source_id: str, new_name: str) -> Optional[str]:
         """
@@ -808,29 +832,14 @@ class ControllerConfig:
         if source_data is None:
             return None
         
-        # Generate new ID from name
-        new_id = new_name.lower().replace(" ", "_")
-        new_id = "".join(c for c in new_id if c.isalnum() or c == "_")
-        
-        # Ensure unique ID
-        base_id = new_id
-        counter = 1
-        while (self._user_profiles_dir / f"{new_id}.json").exists():
-            new_id = f"{base_id}_{counter}"
-            counter += 1
+        new_id = self.profiles.unique_id(new_name)
         
         # Create new profile
         new_data = source_data.copy()
         new_data["name"] = new_name
         new_data["description"] = f"Custom profile based on {source_data.get('name', source_id)}"
         
-        new_path = self._user_profiles_dir / f"{new_id}.json"
-        try:
-            with open(new_path, 'w') as f:
-                json.dump(new_data, f, indent=4)
-            return new_id
-        except IOError:
-            return None
+        return new_id if self.profiles.save(new_id, new_data) else None
 
     def create_profile_as(self, name: str, description: str = "") -> Optional[str]:
         """
@@ -843,19 +852,7 @@ class ControllerConfig:
         Returns:
             New profile ID if successful, None otherwise
         """
-        # Generate new ID from name
-        new_id = name.lower().replace(" ", "_")
-        new_id = "".join(c for c in new_id if c.isalnum() or c == "_")
-
-        if not new_id:
-            new_id = "custom_profile"
-
-        # Ensure unique ID
-        base_id = new_id
-        counter = 1
-        while (self._user_profiles_dir / f"{new_id}.json").exists():
-            new_id = f"{base_id}_{counter}"
-            counter += 1
+        new_id = self.profiles.unique_id(name)
 
         # Build a blank custom profile — empty canvas, no widgets
         new_data = {
@@ -883,13 +880,7 @@ class ControllerConfig:
             }
         }
 
-        new_path = self._user_profiles_dir / f"{new_id}.json"
-        try:
-            with open(new_path, 'w') as f:
-                json.dump(new_data, f, indent=4)
-            return new_id
-        except IOError:
-            return None
+        return new_id if self.profiles.save(new_id, new_data) else None
 
     def delete_profile(self, profile_id: str) -> bool:
         """
@@ -903,30 +894,15 @@ class ControllerConfig:
         Returns:
             True if deleted, False if not allowed or failed
         """
-        # Check if it's a built-in profile
-        bundled_path = self._bundled_profiles_dir / f"{profile_id}.json"
-        if bundled_path.exists():
-            return False  # Can't delete built-in profiles
-        
-        user_path = self._user_profiles_dir / f"{profile_id}.json"
-        if not user_path.exists():
+        if not self.profiles.delete(profile_id):
             return False
-        
-        try:
-            user_path.unlink()
-            
-            # If we deleted the current profile, switch to default
-            if profile_id == self._current_profile:
-                self.switch_profile("adaptive_platform_2")
-            
-            return True
-        except IOError:
-            return False
+        if profile_id == self._current_profile:
+            self.switch_profile("adaptive_platform_2")
+        return True
 
     def is_builtin_profile(self, profile_id: str) -> bool:
         """Check if a profile is a built-in (bundled) profile."""
-        bundled_path = self._bundled_profiles_dir / f"{profile_id}.json"
-        return bundled_path.exists()
+        return self.profiles.is_builtin(profile_id)
 
     def get_user_profiles_path(self) -> str:
         """Get the path to the user profiles directory."""

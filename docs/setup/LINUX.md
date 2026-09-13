@@ -43,19 +43,47 @@ Profiles live in `~/.local/share/ProjectNimbus/profiles/` (or
 
 ## Permissions
 
-`/dev/uinput` is `root:root 0600` by default. **If Steam is installed you are
-already set**: Steam ships `60-steam-input.rules`, which grants the logged-in
-user access. Otherwise install the rule from this repository once:
+Two different nodes are involved. `/dev/uinput`, which Nimbus writes to in
+order to create a virtual pad, is `root:root 0600` by default; the event node
+the kernel then publishes for that pad is `root:input 0660`. Install the rule
+from this repository once to cover both:
 
 ```bash
 sudo cp build_tools/linux/60-nimbus-uinput.rules /etc/udev/rules.d/
 sudo udevadm control --reload
 sudo udevadm trigger --name-match=uinput
+sudo udevadm trigger --subsystem-match=input
 ```
 
-Then log out and back in. The rule uses systemd-logind's `uaccess` tag for
-the active seat and also opens the node to the `input` group as a fallback
-for systems without logind (`sudo usermod -aG input $USER`).
+(Two triggers, not one combined: `udevadm` ANDs its match filters, and
+`uinput` is in the `misc` subsystem, so asking for both at once matches
+nothing at all and reports no error.)
+
+Then log out and back in.
+
+- **Writing** to `/dev/uinput` is all the app itself needs. Steam ships
+  `60-steam-input.rules`, which grants this to the logged-in user, so **if
+  Steam is installed the app works without our rule.**
+- **Reading back** a device Nimbus just created is what the diagnostics under
+  [Verify](#verify) need. Steam's rule grants `uaccess` only for Valve's own
+  vendor ID, so this half is *not* covered by having Steam installed. Our rule
+  tags Nimbus's own devices (`Nimbus Virtual Joystick`, `Microsoft X-Box 360
+  pad`, `Nimbus Probe Mouse`) by name.
+
+Both halves use systemd-logind's `uaccess` tag for the active seat. The
+`/dev/uinput` line additionally opens that node to the `input` group as a
+fallback for systems without logind.
+
+**Mouse Isolation needs the `input` group as well** (`sudo usermod -aG input
+$USER`, then log back in). It reads *real* pointer and keyboard devices, which
+the rule deliberately does not tag: granting read access to every keyboard is
+exactly what the `input` group is, and a rule that quietly did the same thing
+under another name would not be narrower, only less visible. See
+[Mouse Isolation](#mouse-isolation-the-physical-mouse-disappears-from-the-game).
+
+A device's ACL is applied by udev *after* `UI_DEV_CREATE` returns, about 50 ms
+later on a typical desktop, so code that creates a device and immediately reads
+its node has to wait for it rather than assume it.
 
 If `/dev/uinput` does not exist at all, load the module and make it permanent:
 
@@ -69,7 +97,18 @@ bar, and prints the fix in the terminal. Nothing else is affected.
 
 ## Verify
 
+One command runs everything that does not need a game, and writes a single log:
+
 ```bash
+./tests/run_linux_validation.sh          # fast suite, Linux probes, environment report
+./tests/run_linux_validation.sh --grab   # also exercises the grab-failure cleanup path
+```
+
+`--grab` briefly takes a real pointer device, so run it sitting at the machine
+with a keyboard to recover with. The pieces individually:
+
+```bash
+./venv/bin/python -m tests.probe_linux_stack      # uinput, pulse-vs-release read from the kernel, pointer classification
 ./venv/bin/python tests/test_uinput.py            # creates both devices, checks every axis/button
 ./venv/bin/python tests/test_uinput.py --hold 60  # keep them alive so you can inspect them
 ./venv/bin/python tests/probe_game_mouselook.py --window "ELDEN RING"   # with a game running: is it blind to an isolated mouse?
@@ -129,8 +168,10 @@ Details that differ from Windows:
   stop, unless you had turned them on yourself), and by default it turns on
   **Mouse Isolation** (next section)
   so the game cannot see the physical mouse at all. Click the button again to stop. There is no `Ctrl+Alt+F12`
-  emergency hotkey on Linux; the button and quitting the app are the stop
-  paths, and both re-centre the stick.
+  hotkey for Game Mode itself on Linux (that is the Windows-only
+  `mouse_hider` path); the button and quitting the app are the stop paths, and
+  both re-centre the stick. Mouse Isolation has its own `Ctrl+Alt+F12`, which
+  releases the mouse grab without stopping Game Mode.
 - If the current profile outputs to the generic joystick, Game Mode creates
   the Xbox pad on demand and removes it again when you stop.
 
@@ -230,6 +271,7 @@ session misbehaves.
 | Game Focus Mode is greyed out | You are on Wayland; use an X11 session or run the game under `gamescope` |
 | A fullscreen game hides the Nimbus window | Tick **View > Always on Top** (Game Mode does it for you). If it is greyed out you are on Wayland; use an X11 session |
 | Always on Top is ticked but the game still covers Nimbus | Your window manager does not honour `_NET_WM_STATE_ABOVE` over fullscreen windows; run `tests/probe_always_on_top.py` to confirm, and run the game borderless-windowed or under `gamescope` instead |
+| A diagnostic reports `kernel ABS_X = None` | The event node is unreadable: install the udev rule above (Steam's does not cover this) and log back in |
 | Isolate Mouse fails with "no read access to /dev/input/event*" | Add your user to the `input` group (`sudo usermod -aG input $USER`) and log back in |
 | Keyboard dead while isolated | The pass-through keyboard could not be created; check `/dev/uinput` access. Press `Ctrl+Alt+F12` or quit Nimbus to release |
 | Game shows keyboard prompts again after a while | Some games drop controller mode on any mouse click; keep Game Mode running and avoid clicking inside the game window |

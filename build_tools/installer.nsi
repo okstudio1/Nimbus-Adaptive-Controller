@@ -16,6 +16,20 @@
 !define PRODUCT_GUID "nimbus-adaptive-controller"
 !define PRODUCT_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_GUID}"
 
+; ---- Bundled driver setups ----
+; Both are carried inside this installer rather than downloaded: a release asset
+; that moves breaks every installer already in the wild, and NSISdl (the only
+; download plugin present) cannot fetch an https:// URL at all. Run
+; build_tools\fetch_redist.ps1 before makensis; it pins both by SHA-256 and
+; checks the publisher signature. Changing a version here means changing it there.
+; vJoy is the 2016 2.1.9.1 in Justin Shafer's attestation-signed build on
+; purpose: the newer njz3 2.2.1 driver fails to load on Windows 11
+; (0xC000009A, njz3/vJoy issue 17). See fetch_redist.ps1.
+!define VJOY_SETUP     "vJoySetup-2.1.9.1.exe"
+!define VJOY_VERSION   "2.1.9.1"
+!define VIGEM_SETUP    "ViGEmBus_1.22.0_x64_x86_arm64.exe"
+!define VIGEM_VERSION  "1.22.0"
+
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
 OutFile "..\dist\${PRODUCT_FILENAME}-Setup-${PRODUCT_VERSION}.exe"
 InstallDir "$PROGRAMFILES64\${PRODUCT_NAME}"
@@ -29,8 +43,10 @@ Var CreateDesktopShortcut
 Var CreateStartMenuShortcut
 Var InstallVJoy
 Var VJoyInstalled
+Var VJoyVersion
 Var InstallViGEm
 Var ViGEmInstalled
+Var ViGEmBroken
 Var KeepProfiles
 
 ; ---- MUI Settings ----
@@ -91,6 +107,96 @@ Var VJoyStatusLabel
 Var ViGEmCheckbox
 Var ViGEmStatusLabel
 
+; Detection lives in functions because it runs twice: once to draw the page, and
+; again after installing, so what the log reports is the actual state of the
+; machine rather than an installer exit code.
+
+; Sets $VJoyInstalled (0/1) and $VJoyVersion.
+Function DetectVJoy
+    Push $0
+    StrCpy $VJoyInstalled 0
+    StrCpy $VJoyVersion ""
+    ; MUST use SetRegView 64: vJoy is a 64-bit install and registers in the
+    ; native hive, so 32-bit NSIS would otherwise read WOW6432Node and miss it.
+    SetRegView 64
+    ReadRegStr $0 HKLM "${VJOY_KEY_HEADSOFT}" "DisplayVersion"
+    ${If} $0 == ""
+        ReadRegStr $0 HKCU "${VJOY_KEY_HEADSOFT}" "DisplayVersion"
+    ${EndIf}
+    ${If} $0 == ""
+        ReadRegStr $0 HKLM "${VJOY_KEY_FORK}" "DisplayVersion"
+    ${EndIf}
+    ${If} $0 == ""
+        ReadRegStr $0 HKLM "${VJOY_KEY_PLAIN}" "DisplayVersion"
+    ${EndIf}
+    SetRegView lastused
+    ${If} $0 != ""
+        StrCpy $VJoyInstalled 1
+        StrCpy $VJoyVersion $0
+    ${EndIf}
+    ; Fallback: the interface DLL on disk, in either Program Files view
+    ${If} $VJoyInstalled == 0
+        IfFileExists "$PROGRAMFILES64\vJoy\x64\vJoyInterface.dll" 0 +2
+            StrCpy $VJoyInstalled 1
+    ${EndIf}
+    ${If} $VJoyInstalled == 0
+        IfFileExists "$PROGRAMFILES\vJoy\x64\vJoyInterface.dll" 0 +2
+            StrCpy $VJoyInstalled 1
+    ${EndIf}
+    ; Files and the uninstall key are not enough either. vJoy's own installer
+    ; removes its device node when the device fails to start (measured on the
+    ; dev machine on 2026-09-06: a reinstall in the same boot as an uninstall
+    ; hit STATUS_INSUFFICIENT_RESOURCES because the old vjoy.sys was still
+    ; resident, and vJoyInstall.exe rolled the device back but left everything
+    ; else). What remains reports 0 buttons and status UNKN to every client.
+    ; The driver's Enum key counts attached devices; require one, so the page
+    ; offers a reinstall, which recreates the device.
+    ${If} $VJoyInstalled == 1
+        SetRegView 64
+        ReadRegDWORD $0 HKLM "SYSTEM\CurrentControlSet\Services\vjoy\Enum" "Count"
+        SetRegView lastused
+        ${If} $0 < 1
+            StrCpy $VJoyInstalled 0
+        ${EndIf}
+    ${EndIf}
+    Pop $0
+FunctionEnd
+
+; Sets $ViGEmInstalled (0/1).
+;
+; The service entry alone is not proof. It outlives an uninstall until the next
+; reboot, so a machine whose ViGEmBus has been removed still answers "sc query"
+; with 0 while every client fails with VIGEM_ERROR_BUS_NOT_FOUND. Measured on
+; the dev machine on 2026-09-06 after an MSI removal: service present, PnP
+; device gone, vgamepad refusing to open a pad. Trusting the service there would
+; skip the install and leave the user with a ViGEmBus that cannot work.
+;
+; The driver's Enum key counts the devices actually attached to it, which is
+; missing or 0 once the bus device is gone, so require both.
+Function DetectViGEm
+    Push $0
+    Push $1
+    Push $2
+    StrCpy $ViGEmInstalled 0
+    StrCpy $ViGEmBroken 0
+    nsExec::ExecToStack 'sc query ViGEmBus'
+    Pop $0
+    Pop $1
+    ${If} $0 == 0
+        SetRegView 64
+        ReadRegDWORD $2 HKLM "SYSTEM\CurrentControlSet\Services\ViGEmBus\Enum" "Count"
+        SetRegView lastused
+        ${If} $2 >= 1
+            StrCpy $ViGEmInstalled 1
+        ${Else}
+            StrCpy $ViGEmBroken 1
+        ${EndIf}
+    ${EndIf}
+    Pop $2
+    Pop $1
+    Pop $0
+FunctionEnd
+
 Function VJoyOptionsPage
     !insertmacro MUI_HEADER_TEXT "Virtual Controller Drivers" "vJoy and ViGEmBus are required for controller emulation."
     
@@ -108,58 +214,30 @@ Function VJoyOptionsPage
     ${NSD_CreateGroupBox} 0 18u 100% 40u "vJoy (DirectInput controller)"
     Pop $0
     
-    ; Check all known vJoy registry locations
-    ; MUST use SetRegView 64 — vJoy is a 64-bit install and registers in the
-    ; native hive; NSIS 32-bit would otherwise silently read WOW6432Node and miss it.
-    StrCpy $VJoyInstalled 0
-    SetRegView 64
-    ReadRegStr $0 HKLM "${VJOY_KEY_HEADSOFT}" "DisplayVersion"
-    ${If} $0 != ""
-        StrCpy $VJoyInstalled 1
-    ${EndIf}
-    ${If} $VJoyInstalled == 0
-        ReadRegStr $0 HKCU "${VJOY_KEY_HEADSOFT}" "DisplayVersion"
-        ${If} $0 != ""
-            StrCpy $VJoyInstalled 1
-        ${EndIf}
-    ${EndIf}
-    ${If} $VJoyInstalled == 0
-        ReadRegStr $0 HKLM "${VJOY_KEY_FORK}" "DisplayVersion"
-        ${If} $0 != ""
-            StrCpy $VJoyInstalled 1
-        ${EndIf}
-    ${EndIf}
-    ${If} $VJoyInstalled == 0
-        ReadRegStr $0 HKLM "${VJOY_KEY_PLAIN}" "DisplayVersion"
-        ${If} $0 != ""
-            StrCpy $VJoyInstalled 1
-        ${EndIf}
-    ${EndIf}
-    SetRegView lastused
-    ; Fallback: check if vJoyInterface.dll exists on disk
-    ${If} $VJoyInstalled == 0
-        IfFileExists "$PROGRAMFILES\vJoy\x64\vJoyInterface.dll" 0 +2
-            StrCpy $VJoyInstalled 1
-    ${EndIf}
-    ${If} $VJoyInstalled == 0
-        IfFileExists "$PROGRAMFILES64\vJoy\x64\vJoyInterface.dll" 0 +2
-            StrCpy $VJoyInstalled 1
-    ${EndIf}
+    Call DetectVJoy
     
     ${If} $VJoyInstalled == 1
         StrCpy $InstallVJoy 0
-        ${If} $0 != ""
-            ${NSD_CreateLabel} 10u 32u 90% 12u "Installed (v$0)"
+        ${If} $VJoyVersion != ""
+            ${NSD_CreateLabel} 10u 32u 90% 12u "Installed (v$VJoyVersion)"
         ${Else}
             ${NSD_CreateLabel} 10u 32u 90% 12u "Already installed"
         ${EndIf}
         Pop $VJoyStatusLabel
     ${Else}
         StrCpy $InstallVJoy 1
-        ${NSD_CreateCheckbox} 10u 32u 90% 12u "Install vJoy driver (recommended)"
-        Pop $VJoyCheckbox
-        ${NSD_Check} $VJoyCheckbox
-        ${NSD_CreateLabel} 10u 48u 90% 12u "Required for flight sim and legacy game profiles"
+        ${If} $VJoyVersion != ""
+            ; Present on paper, but with no device: the reinstall repairs it.
+            ${NSD_CreateCheckbox} 10u 32u 90% 12u "Repair vJoy (v$VJoyVersion found, but its device is missing)"
+            Pop $VJoyCheckbox
+            ${NSD_Check} $VJoyCheckbox
+            ${NSD_CreateLabel} 10u 48u 90% 12u "Reinstalling ${VJOY_VERSION} recreates the device. Required for DirectInput profiles"
+        ${Else}
+            ${NSD_CreateCheckbox} 10u 32u 90% 12u "Install vJoy ${VJOY_VERSION} (recommended)"
+            Pop $VJoyCheckbox
+            ${NSD_Check} $VJoyCheckbox
+            ${NSD_CreateLabel} 10u 48u 90% 12u "Required for flight sim and legacy game profiles"
+        ${EndIf}
         Pop $VJoyStatusLabel
     ${EndIf}
     
@@ -167,27 +245,32 @@ Function VJoyOptionsPage
     ${NSD_CreateGroupBox} 0 64u 100% 40u "ViGEmBus (Xbox 360 controller emulation)"
     Pop $0
     
-    ; Check if ViGEmBus is installed via service query
-    nsExec::ExecToStack 'sc query ViGEmBus'
-    Pop $0
-    Pop $1
-    ${If} $0 == 0
-        StrCpy $ViGEmInstalled 1
+    Call DetectViGEm
+    ${If} $ViGEmInstalled == 1
         StrCpy $InstallViGEm 0
-        ${NSD_CreateLabel} 10u 78u 90% 12u "Installed and running"
+        ${NSD_CreateLabel} 10u 78u 90% 12u "Already installed"
         Pop $ViGEmStatusLabel
     ${Else}
-        StrCpy $ViGEmInstalled 0
         StrCpy $InstallViGEm 1
-        ${NSD_CreateCheckbox} 10u 78u 90% 12u "Install ViGEmBus driver (recommended)"
-        Pop $ViGEmCheckbox
-        ${NSD_Check} $ViGEmCheckbox
-        ${NSD_CreateLabel} 10u 92u 90% 12u "Required for Game Mode and Xbox controller profiles"
+        ${If} $ViGEmBroken == 1
+            ; The service entry is there but no bus device is attached, which is
+            ; what a removed ViGEmBus looks like until the next reboot. Every
+            ; client fails with VIGEM_ERROR_BUS_NOT_FOUND; the reinstall repairs it.
+            ${NSD_CreateCheckbox} 10u 78u 90% 12u "Repair ViGEmBus (found, but not working)"
+            Pop $ViGEmCheckbox
+            ${NSD_Check} $ViGEmCheckbox
+            ${NSD_CreateLabel} 10u 92u 90% 12u "Reinstalling ${VIGEM_VERSION} restores the bus device. Required for Game Mode"
+        ${Else}
+            ${NSD_CreateCheckbox} 10u 78u 90% 12u "Install ViGEmBus ${VIGEM_VERSION} (recommended)"
+            Pop $ViGEmCheckbox
+            ${NSD_Check} $ViGEmCheckbox
+            ${NSD_CreateLabel} 10u 92u 90% 12u "Required for Game Mode and Xbox controller profiles"
+        ${EndIf}
         Pop $ViGEmStatusLabel
     ${EndIf}
     
     ; Info text
-    ${NSD_CreateLabel} 0 110u 100% 20u "Both drivers are safe, open-source, and used by DS4Windows, Steam, etc.$\r$\nAn internet connection is required to download them."
+    ${NSD_CreateLabel} 0 110u 100% 24u "Both are open-source drivers used by DS4Windows, Steam and many other tools: vJoy by Shaul Eizikovich and ViGEmBus by Nefarius Software Solutions.$\r$\nThey are included in this installer, so no internet connection is needed. Untick either one to skip it."
     Pop $0
     
     nsDialogs::Show
@@ -280,12 +363,32 @@ Function .onInit
     ; Initialize shortcut options to checked (1 = checked in NSIS)
     StrCpy $CreateDesktopShortcut 1
     StrCpy $CreateStartMenuShortcut 1
+
+    ; A silent install (/S) skips every custom page, so nothing would set the
+    ; driver choices and a scripted deployment would end up with the app and no
+    ; drivers. Default to installing whichever driver is missing, and leave the
+    ; ones already present alone. Every MessageBox below carries /SD for the
+    ; same reason: without it a silent install stops on a dialog nobody sees.
+    ${If} ${Silent}
+        Call DetectVJoy
+        Call DetectViGEm
+        ${If} $VJoyInstalled == 1
+            StrCpy $InstallVJoy 0
+        ${Else}
+            StrCpy $InstallVJoy 1
+        ${EndIf}
+        ${If} $ViGEmInstalled == 1
+            StrCpy $InstallViGEm 0
+        ${Else}
+            StrCpy $InstallViGEm 1
+        ${EndIf}
+    ${EndIf}
     
     ; Check if Nimbus Adaptive Controller is currently running
     nsExec::ExecToStack 'cmd /c tasklist /FI "IMAGENAME eq ${PRODUCT_EXE}" /NH | findstr /I "Nimbus-Adaptive"'
     Pop $0
     ${If} $0 == 0
-        MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION "${PRODUCT_NAME} is currently running.$\r$\n$\r$\nClick OK to close it and continue, or Cancel to abort." IDOK closeApp IDCANCEL abortInstall
+        MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION "${PRODUCT_NAME} is currently running.$\r$\n$\r$\nClick OK to close it and continue, or Cancel to abort." /SD IDOK IDOK closeApp IDCANCEL abortInstall
         abortInstall:
             Abort
         closeApp:
@@ -299,7 +402,7 @@ Function .onInit
     ${If} $0 != ""
     ${AndIf} $2 != ""
         ReadRegStr $1 HKCU "${PRODUCT_UNINST_KEY}" "DisplayVersion"
-        MessageBox MB_YESNO|MB_ICONQUESTION "A previous version of ${PRODUCT_NAME} (v$1) was found at:$\r$\n$2$\r$\n$\r$\nWould you like to remove it before installing the new version?$\r$\n(Recommended: Yes)" IDYES removeUserPrev IDNO skipUserPrev
+        MessageBox MB_YESNO|MB_ICONQUESTION "A previous version of ${PRODUCT_NAME} (v$1) was found at:$\r$\n$2$\r$\n$\r$\nWould you like to remove it before installing the new version?$\r$\n(Recommended: Yes)" /SD IDYES IDYES removeUserPrev IDNO skipUserPrev
         removeUserPrev:
             ExecWait '"$0" /S'
             Sleep 2000
@@ -312,7 +415,7 @@ Function .onInit
     ${If} $0 != ""
     ${AndIf} $2 != ""
         ReadRegStr $1 HKLM "${PRODUCT_UNINST_KEY}" "DisplayVersion"
-        MessageBox MB_YESNO|MB_ICONQUESTION "A system-wide installation of ${PRODUCT_NAME} (v$1) was found at:$\r$\n$2$\r$\n$\r$\nWould you like to remove it before installing the new version?$\r$\n(Recommended: Yes)" IDYES removeMachinePrev IDNO skipMachinePrev
+        MessageBox MB_YESNO|MB_ICONQUESTION "A system-wide installation of ${PRODUCT_NAME} (v$1) was found at:$\r$\n$2$\r$\n$\r$\nWould you like to remove it before installing the new version?$\r$\n(Recommended: Yes)" /SD IDYES IDYES removeMachinePrev IDNO skipMachinePrev
         removeMachinePrev:
             ExecWait '"$0" /S'
             Sleep 2000
@@ -363,73 +466,124 @@ Section "Install"
         CreateShortCut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\${PRODUCT_EXE}"
     ${EndIf}
     
-    ; ---- vJoy Driver Installation ----
+    ; ---- Driver installation ----
+    ; Both setups are bundled (see the defines at the top and
+    ; build_tools\fetch_redist.ps1). $PLUGINSDIR is wiped when the installer
+    ; exits, so a setup is copied to $INSTDIR\drivers only when it fails and the
+    ; user may need to run it by hand.
+    ;
+    ; Success is judged by detecting the driver afterwards, not by the exit code:
+    ; these are third-party setups and their codes are not all documented. Exit
+    ; codes 3010 and 1641 mean "installed, needs a restart", which is not failure.
     ${If} $InstallVJoy == 1
-        DetailPrint "Downloading vJoy driver..."
-        SetOutPath "$TEMP"
-        
-        ; Download vJoy installer from GitHub releases
-        ; Using njz3's maintained fork
-        NSISdl::download /TIMEOUT=60000 "https://github.com/njz3/vJoy/releases/download/v2.2.1.1/vJoySetup.exe" "$TEMP\vJoySetup.exe"
-        Pop $0
-        ${If} $0 == "success"
-            DetailPrint "Installing vJoy driver (this may take a moment)..."
-            ; Run vJoy installer silently
-            nsExec::ExecToLog '"$TEMP\vJoySetup.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART'
-            Pop $0
-            ${If} $0 == 0
-                DetailPrint "vJoy driver installed successfully"
-                
-                ; Configure vJoy device 1 with 8 axes and 128 buttons
-                ; vJoyConfig.exe is installed by vJoy to Program Files
-                nsExec::ExecToLog '"$PROGRAMFILES\vJoy\x64\vJoyConfig.exe" 1 -f -a x y z rx ry rz sl0 sl1 -b 128'
-                DetailPrint "vJoy device configured"
-            ${Else}
-                DetailPrint "vJoy installation may require a restart"
-                MessageBox MB_OK|MB_ICONINFORMATION "vJoy driver installation complete.$\r$\n$\r$\nYou may need to restart your computer for the driver to work properly."
+    ${OrIf} $InstallViGEm == 1
+        InitPluginsDir
+        SetOutPath "$PLUGINSDIR"
+    ${EndIf}
+
+    ${If} $InstallVJoy == 1
+        DetailPrint "Installing vJoy ${VJOY_VERSION}..."
+        File "redist\${VJOY_SETUP}"
+        ExecWait '"$PLUGINSDIR\${VJOY_SETUP}" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART' $0
+        StrCpy $2 0
+        ${If} $0 == 0
+        ${OrIf} $0 == 3010
+        ${OrIf} $0 == 1641
+            StrCpy $2 1
+        ${EndIf}
+        ${If} $0 == 3010
+        ${OrIf} $0 == 1641
+            SetRebootFlag true
+        ${EndIf}
+        Call DetectVJoy
+        ${If} $VJoyInstalled == 1
+            DetailPrint "vJoy installed"
+            ; Configure device 1 the way Nimbus profiles expect: 8 axes, 128 buttons.
+            ; vJoy is a 64-bit install, so this is $PROGRAMFILES64; the 32-bit
+            ; installer's $PROGRAMFILES points at Program Files (x86), where vJoy
+            ; never lands, which is why this step used to do nothing.
+            StrCpy $3 "$PROGRAMFILES64\vJoy\x64\vJoyConfig.exe"
+            ${IfNot} ${FileExists} "$3"
+                StrCpy $3 "$PROGRAMFILES\vJoy\x64\vJoyConfig.exe"
             ${EndIf}
-            
-            ; Clean up
-            Delete "$TEMP\vJoySetup.exe"
+            ${If} ${FileExists} "$3"
+                nsExec::ExecToLog '"$3" 1 -f -a x y z rx ry rz sl0 sl1 -b 128'
+                Pop $1
+                ${If} $1 == 0
+                    DetailPrint "vJoy device 1 configured (8 axes, 128 buttons)"
+                ${Else}
+                    DetailPrint "vJoy device 1 not reconfigured (code $1); Nimbus will use the device as it is"
+                ${EndIf}
+            ${Else}
+                DetailPrint "vJoyConfig.exe not found; leaving the vJoy device as it is"
+            ${EndIf}
+        ${ElseIf} $2 == 1
+            ; Setup reported success but the driver is not visible yet.
+            SetRebootFlag true
+            DetailPrint "vJoy installed; restart Windows to finish"
         ${Else}
-            DetailPrint "Failed to download vJoy: $0"
-            MessageBox MB_OK|MB_ICONEXCLAMATION "Could not download vJoy driver.$\r$\n$\r$\nPlease install it manually from:$\r$\nhttps://github.com/njz3/vJoy/releases$\r$\n$\r$\n${PRODUCT_NAME} will not function without vJoy."
+            DetailPrint "vJoy setup failed (exit code $0)"
+            CreateDirectory "$INSTDIR\drivers"
+            CopyFiles /SILENT "$PLUGINSDIR\${VJOY_SETUP}" "$INSTDIR\drivers"
+            MessageBox MB_YESNO|MB_ICONEXCLAMATION "The vJoy driver did not install (code $0).$\r$\n$\r$\nNimbus needs it for DirectInput profiles. A copy of the setup was saved here:$\r$\n$INSTDIR\drivers\${VJOY_SETUP}$\r$\n$\r$\nRun it now with its own installer window?" /SD IDNO IDYES vjoyManual IDNO vjoyDone
+            vjoyManual:
+                ExecWait '"$INSTDIR\drivers\${VJOY_SETUP}"'
+                Call DetectVJoy
+            vjoyDone:
         ${EndIf}
     ${EndIf}
-    
-    ; ---- ViGEmBus Driver Installation ----
+
     ${If} $InstallViGEm == 1
-        DetailPrint "Downloading ViGEmBus driver..."
-        SetOutPath "$TEMP"
-        
-        ; Download ViGEmBus setup from GitHub releases (nefarius)
-        NSISdl::download /TIMEOUT=60000 "https://github.com/nefarius/ViGEmBus/releases/download/v1.22.0/ViGEmBus_Setup_1.22.0.exe" "$TEMP\ViGEmBus_Setup.exe"
-        Pop $0
-        ${If} $0 == "success"
-            DetailPrint "Installing ViGEmBus driver (this may take a moment)..."
-            ; Run ViGEmBus installer silently
-            nsExec::ExecToLog '"$TEMP\ViGEmBus_Setup.exe" /quiet /norestart'
-            Pop $0
-            ${If} $0 == 0
-                DetailPrint "ViGEmBus driver installed successfully"
-            ${Else}
-                ; Try alternate silent flags
-                nsExec::ExecToLog '"$TEMP\ViGEmBus_Setup.exe" --silent'
-                Pop $0
-                ${If} $0 == 0
-                    DetailPrint "ViGEmBus driver installed successfully"
-                ${Else}
-                    DetailPrint "ViGEmBus installation may require manual steps"
-                    MessageBox MB_OK|MB_ICONINFORMATION "ViGEmBus driver installation complete.$\r$\n$\r$\nIf Game Mode doesn't detect the controller, try:$\r$\n1. Restart your computer$\r$\n2. Or run ViGEmBus_Setup.exe manually from:$\r$\nhttps://github.com/nefarius/ViGEmBus/releases"
-                ${EndIf}
-            ${EndIf}
-            
-            ; Clean up
-            Delete "$TEMP\ViGEmBus_Setup.exe"
-        ${Else}
-            DetailPrint "Failed to download ViGEmBus: $0"
-            MessageBox MB_OK|MB_ICONEXCLAMATION "Could not download ViGEmBus driver.$\r$\n$\r$\nPlease install it manually from:$\r$\nhttps://github.com/nefarius/ViGEmBus/releases$\r$\n$\r$\nGame Mode (virtual Xbox controller) requires this driver."
+        DetailPrint "Installing ViGEmBus ${VIGEM_VERSION}..."
+        File "redist\${VIGEM_SETUP}"
+        ; Advanced Installer bootstrapper: /exenoui hides its own UI and passes
+        ; the rest to msiexec.
+        ExecWait '"$PLUGINSDIR\${VIGEM_SETUP}" /exenoui /qn /norestart' $0
+        StrCpy $2 0
+        ${If} $0 == 0
+        ${OrIf} $0 == 3010
+        ${OrIf} $0 == 1641
+            StrCpy $2 1
         ${EndIf}
+        ${If} $0 == 3010
+        ${OrIf} $0 == 1641
+            SetRebootFlag true
+        ${EndIf}
+        Call DetectViGEm
+        ${If} $ViGEmInstalled == 1
+            DetailPrint "ViGEmBus installed"
+        ${ElseIf} $2 == 1
+            SetRebootFlag true
+            DetailPrint "ViGEmBus installed; restart Windows to finish"
+        ${Else}
+            DetailPrint "ViGEmBus setup failed (exit code $0)"
+            CreateDirectory "$INSTDIR\drivers"
+            CopyFiles /SILENT "$PLUGINSDIR\${VIGEM_SETUP}" "$INSTDIR\drivers"
+            MessageBox MB_YESNO|MB_ICONEXCLAMATION "The ViGEmBus driver did not install (code $0).$\r$\n$\r$\nGame Mode and the Xbox controller profiles need it. A copy of the setup was saved here:$\r$\n$INSTDIR\drivers\${VIGEM_SETUP}$\r$\n$\r$\nRun it now with its own installer window?" /SD IDNO IDYES vigemManual IDNO vigemDone
+            vigemManual:
+                ExecWait '"$INSTDIR\drivers\${VIGEM_SETUP}"'
+                Call DetectViGEm
+            vigemDone:
+        ${EndIf}
+    ${EndIf}
+
+    ; One plain summary, so a user who skipped or lost a driver knows before the
+    ; app tells them in its own way.
+    Call DetectVJoy
+    Call DetectViGEm
+    ${If} $VJoyInstalled == 0
+    ${OrIf} $ViGEmInstalled == 0
+        StrCpy $1 ""
+        ${If} $VJoyInstalled == 0
+            StrCpy $1 "$1$\r$\n  vJoy is missing. DirectInput profiles will not work."
+        ${EndIf}
+        ${If} $ViGEmInstalled == 0
+            StrCpy $1 "$1$\r$\n  ViGEmBus is missing. Game Mode and Xbox controller profiles will not work."
+        ${EndIf}
+        DetailPrint "Driver check: one or more drivers are missing"
+        MessageBox MB_OK|MB_ICONINFORMATION "${PRODUCT_NAME} is installed, but not every controller driver is present:$\r$\n$1$\r$\n$\r$\nRun this installer again at any time to add them. Nimbus starts and runs either way." /SD IDOK
+    ${Else}
+        DetailPrint "Driver check: vJoy and ViGEmBus are both present"
     ${EndIf}
 SectionEnd
 
@@ -440,6 +594,10 @@ Section "Uninstall"
     Delete "$INSTDIR\Uninstall.exe"
     Delete "$INSTDIR\controller_config.json"
     RMDir /r "$INSTDIR\profiles"
+    ; Any driver setup left behind for the user after a failed silent install.
+    ; vJoy and ViGEmBus themselves are deliberately left installed: other
+    ; software (DS4Windows, Steam, other mappers) shares them.
+    RMDir /r "$INSTDIR\drivers"
     RMDir "$INSTDIR"
 
     ; Remove shortcuts
