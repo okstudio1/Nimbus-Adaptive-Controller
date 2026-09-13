@@ -5,7 +5,7 @@ import types
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ["QT_QUICK_CONTROLS_STYLE"] = "Basic"
@@ -27,7 +27,7 @@ native_modules["src.mouse_isolation_win"].MOUSE_ISOLATION_AVAILABLE = False
 previous_modules = {name: sys.modules.get(name) for name in native_modules}
 sys.modules.update(native_modules)
 try:
-    from src.bridge import ControllerBridge
+    from src.bridge import ControllerBridge, UINPUT_AVAILABLE
 finally:
     for module_name, previous in previous_modules.items():
         if previous is None:
@@ -141,8 +141,18 @@ class BridgeServicesTests(unittest.TestCase):
         original = self.output.vigem
         self.bridge.setOutputMode("vjoy")
         self.assertIs(self.bridge._get_active_interface(), self.output.vjoy)
-        self.assertIs(self.bridge._vigem, original)
-        self.assertEqual(original.mock_calls, [])
+        if UINPUT_AVAILABLE:
+            # On Linux each back end is a separate virtual pad that games can
+            # see, so the deselected one is destroyed rather than left attached
+            # (ControllerBridge._retire_inactive_interface). Shutting it down is
+            # the only thing the bridge may do to it: no input, no reset.
+            self.assertIsNone(self.bridge._vigem)
+            self.assertEqual(original.mock_calls, [call.shutdown()])
+        else:
+            # Windows keeps both drivers attached, vJoy standing by as the
+            # ViGEm fallback, and touches neither on a mode switch.
+            self.assertIs(self.bridge._vigem, original)
+            self.assertEqual(original.mock_calls, [])
         self.config.set.assert_called_with("controller.prefer_vigem", False)
 
     def test_qml_components_load_and_react_without_service_context_objects(self):
